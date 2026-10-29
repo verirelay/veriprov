@@ -1,0 +1,64 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Group by branch name rather than github.ref: push and pull_request carry
+  # different refs for the same change and would otherwise run twice.
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The version must match the go directive in go.mod.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26.10'
+          cache: true
+
+      - name: format
+        run: |
+          set -euo pipefail
+          unformatted="$(go run mvdan.cc/gofumpt@v0.12.0 -l .)"
+          [[ -z "$unformatted" ]] || { echo "error: unformatted files:" >&2; printf '%s\n' "$unformatted" >&2; exit 1; }
+
+      - name: vet
+        run: go vet ./...
+
+      # The version must match version: "2" in .golangci.yml.
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
+        with:
+          version: v2.15.0
+
+      - name: test
+        run: go test ./...
+
+      - name: build
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=0 go build -trimpath -o "$RUNNER_TEMP/veriprov" ./cmd/veriprov
+
+      - name: docker build
+        run: |
+          set -euo pipefail
+          docker build -t veriprov:ci .
+
+      # YAML parsing alone cannot catch workflow mistakes; only actionlint can.
+      - name: actionlint
+        run: |
+          set -euo pipefail
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint" -version
+          "$(go env GOPATH)/bin/actionlint"

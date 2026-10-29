@@ -1,0 +1,18 @@
+# The build context contains source only.
+#
+# Local hidden files and tool state (including .git, which feeds the VCS
+# stamping of go build and would make "the same commit" produce different
+# bytes) are excluded entirely. With .git gone, the image is a pure function
+# of content: same commit + same toolchain -> same bytes. The authoritative
+# version record lives in the git tag, the release's
+# veriprov-component-build.json, and the cosign signature.
+.*
+
+# secrets/ and production-secrets/ hold real runtime secrets: BuildKit ships
+# the whole context to the builder, and `COPY . .` would also leave a copy in
+# a build-stage layer. The final image does not contain them, but there is no
+# reason for secrets to leave this machine.
+secrets/
+production-secrets/
+docker-compose.yaml
+*.md

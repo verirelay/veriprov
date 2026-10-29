@@ -1,0 +1,37 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - errcheck
+    - errorlint
+    - gocyclo
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - noctx
+    - staticcheck
+    - unused
+  settings:
+    gocyclo:
+      min-complexity: 20
+    gosec:
+      excludes:
+        # File paths come from VERIPROV_* configuration, never from requests.
+        - G304
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - gosec
+
+formatters:
+  enable:
+    - gofmt
+    - gofumpt

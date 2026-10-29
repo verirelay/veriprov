@@ -1,0 +1,23 @@
+services:
+  veriprov:
+    image: ghcr.io/verirelay/veriprov:v0.1.0
+    environment:
+      VERIPROV_IDENTITY_KEY_FILE: /run/veriprov/identity-key.pem
+      VERIPROV_CHALLENGE_KEY_FILE: /run/veriprov/challenge-key
+      VERIPROV_DEPLOYMENTS_FILE: /run/veriprov/deployments.json
+      VERIPROV_ATTESTATION_POLICY_FILE: /run/veriprov/attestation-policy.json
+      VERIPROV_SEVSNP_KDS_CACHE_DIR: /var/cache/veriprov/kds
+    volumes:
+      - ./production-secrets:/run/veriprov:ro
+      - veriprov-kds-cache:/var/cache/veriprov/kds
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+volumes:
+  veriprov-kds-cache:
