@@ -273,79 +273,38 @@ jobs:
           if-no-files-found: error
 
       - name: write release notes
+        env:
+          IMAGE_REF: ${{ steps.meta.outputs.image }}@${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
-          out="$RUNNER_TEMP/out"
-          img="${{ steps.meta.outputs.image }}"
-          digest="${{ steps.build.outputs.digest }}"
-          commit="${{ steps.source.outputs.commit }}"
-          identity='^https://github\.com/'"${GITHUB_REPOSITORY}"'/\.github/workflows/release\.yml@'
-          extra=""
-          if [[ "$PROMOTE_LATEST" == "true" ]]; then extra=", \`${RELEASE_TAG}\`, \`latest\`"; fi
-          notes="$out/RELEASE_NOTES.md"
+          # The quoted heredoc keeps Markdown backticks literal; @REPO@, @TAG@ and @IMAGE@ are filled in below.
+          notes="$(cat <<'EOF'
+          VeriProv delivers Runtime Config to a CVM only after it passes Attestation.
 
-          # The static part uses a quoted heredoc (backticks/backslashes stay
-          # literal); interpolation points are replaced by placeholders.
-          cat > "$notes" <<'STATIC'
-          The container image is published to GHCR.
+          Deploy it with [Docker Compose](https://github.com/@REPO@/blob/@TAG@/docs/deployment.md). The image:
 
           ```
-          docker pull @IMAGE_REF@
+          @IMAGE@
           ```
 
-          - Immutable identity: `@DIGEST@` (deploy and measure by digest, not by tag)
-          - Tags: `sha-@COMMIT@`@EXTRA@
+          `sbom.spdx.json` is the image's SBOM. `veriprov-component-build.json` records the image digest, the digest of `/veriprov` inside it, and both base images.
 
-          **Reproducibility**: the image digest is stable for the same commit +
-          the same Dockerfile. BuildKit's `provenance`/`sbom` inputs bake
-          attestations into the image index and give identical content a
-          different digest on every build, so the signature and SBOM are
-          attached as OCI referrers instead; referrers do not affect the image
-          digest. Re-running the release for the same commit fails the
-          immutability guard instead of silently re-pointing `sha-<commit>`.
+          ## Verify
 
-          Verify the signature (Fulcio short-lived certificate + Rekor
-          transparency log):
-
-          ```
-          cosign verify @IMAGE_REF@ \
-            --certificate-identity-regexp '@IDENTITY@' \
+          ```bash
+          cosign verify @IMAGE@ \
+            --certificate-identity-regexp '^https://github\.com/@REPO@/\.github/workflows/release\.yml@' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           ```
 
-          Verify the SBOM (attached as a referrer; also published in this
-          release as `sbom.spdx.json`):
-
-          ```
-          cosign verify-attestation @IMAGE_REF@ \
-            --type spdxjson \
-            --certificate-identity-regexp '@IDENTITY@' \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com
-          ```
-
-          Verify the GitHub artifact attestation of the image (the release
-          assets have one too):
-
-          ```
-          gh attestation verify oci://@IMAGE_REF@ \
-            --repo @REPO@ \
-            --signer-workflow @REPO@/.github/workflows/release.yml
-          ```
-          STATIC
-
-          python3 - "$notes" "$img" "$digest" "$commit" "$extra" "$identity" "$GITHUB_REPOSITORY" <<'PYEOF'
-          import sys
-          path, img, digest, commit, extra, identity, repo = sys.argv[1:8]
-          text = open(path, encoding="utf-8").read()
-          text = text.replace("@IMAGE_REF@", f"{img}@{digest}")
-          text = text.replace("@DIGEST@", digest)
-          text = text.replace("@COMMIT@", commit)
-          text = text.replace("@EXTRA@", extra)
-          text = text.replace("@IDENTITY@", identity)
-          text = text.replace("@REPO@", repo)
-          open(path, "w", encoding="utf-8").write(text)
-          PYEOF
-          cat "$notes"
+          The SBOM is also attached to the image as a signed attestation. Verify it with `cosign verify-attestation --type spdxjson` and the same two flags.
+          EOF
+          )"
+          notes="${notes//@REPO@/"$GITHUB_REPOSITORY"}"
+          notes="${notes//@TAG@/"$RELEASE_TAG"}"
+          notes="${notes//@IMAGE@/"$IMAGE_REF"}"
+          printf '%s\n' "$notes" > "$RUNNER_TEMP/out/RELEASE_NOTES.md"
+          cat "$RUNNER_TEMP/out/RELEASE_NOTES.md"
 
       - name: publish release
         env:
@@ -356,6 +315,7 @@ jobs:
             --verify-tag \
             --title "$RELEASE_TAG" \
             --notes-file "$RUNNER_TEMP/out/RELEASE_NOTES.md" \
+            --generate-notes \
             "$RUNNER_TEMP"/out/veriprov-component-build.json \
             "$RUNNER_TEMP"/out/SHA256SUMS \
             "$RUNNER_TEMP"/out/image.cosign.bundle \
