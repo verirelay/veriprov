@@ -41,7 +41,7 @@ printf '{"version":"veriprov-bootstrap/1","protocol":"veriprov/1","url":"https:/
 
 The fields are in [Guest files](https://github.com/verirelay/protocol/blob/main/docs/guest.md), section "Bootstrap". Every deployment needs its own Bootstrap bytes. Set `profile` to tell apart Bootstraps that would otherwise be identical.
 
-The Operator launches each CVM with the exact bytes of this file on the Config Disk and their SHA-256 as `host-data`, as shown in VeriForge's [QEMU verification](https://github.com/verirelay/veriforge/blob/main/docs/qemu.md), section "SEV-SNP launch".
+The Operator launches each CVM with the exact bytes of this file on the Config Disk and their SHA-256 as `host-data`, as shown in VeriForge's [QEMU verification](https://github.com/verirelay/veriforge/blob/main/docs/qemu.md), section "SEV-SNP launch". VeriProv serves those bytes at [`GET /v1/bootstraps`](api.md#bootstraps), so CVM hosts need no copy of the file.
 
 VeriProv is configured with the same file: any byte difference, including whitespace or a trailing newline, changes `HOST_DATA`. A CVM whose `HOST_DATA` belongs to no deployment gets `409 policy.denied`.
 
@@ -63,7 +63,7 @@ Each release lists its Launch Measurements, one per vCPU count. See Release's [L
 
 ## docker-compose.yaml
 
-The root [`docker-compose.yaml`](../docker-compose.yaml) runs the published image `ghcr.io/verirelay/veriprov:v0.1.0`, hardened:
+The root [`docker-compose.yaml`](../docker-compose.yaml) runs the published image `ghcr.io/verirelay/veriprov:v0.2.0`, hardened:
 
 - Read-only rootfs
 - All capabilities dropped

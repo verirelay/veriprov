@@ -15,5 +15,6 @@ Reports are in scope when they affect the code in this repository:
 - Challenge handling
 - Deployment selection by `HOST_DATA`
 - HPKE sealing and signing of the Runtime Config
+- The public Bootstrap listing (`GET /v1/bootstraps`), which serves Bootstraps only, never a Runtime Config
 
 Findings that only concern third-party dependencies should be reported upstream as well.

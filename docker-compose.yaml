@@ -1,6 +1,6 @@
 services:
   veriprov:
-    image: ghcr.io/verirelay/veriprov:v0.1.0
+    image: ghcr.io/verirelay/veriprov:v0.2.0
     environment:
       VERIPROV_IDENTITY_KEY_FILE: /run/veriprov/identity-key.pem
       VERIPROV_CHALLENGE_KEY_FILE: /run/veriprov/challenge-key

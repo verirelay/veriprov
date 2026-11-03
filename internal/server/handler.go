@@ -15,23 +15,40 @@ import (
 	"github.com/verirelay/protocol/veriprov1"
 	"github.com/verirelay/veriprov/internal/attestation"
 	"github.com/verirelay/veriprov/internal/challenge"
+	"github.com/verirelay/veriprov/internal/config"
 )
 
 type Options struct {
 	Challenges  *challenge.Issuer
 	Verifier    attestation.Verifier
 	IdentityKey ed25519.PrivateKey
-	// Deployments maps HOST_DATA to the Runtime Config sealed to a Guest whose
-	// Attestation Report carries it.
-	Deployments    map[[32]byte][]byte
+	// Deployments pair each Bootstrap with the Runtime Config sealed to a
+	// Guest whose Attestation Report carries its HOST_DATA.
+	Deployments    []config.Deployment
 	MaxBodyBytes   int64
 	MaxConcurrency int
 	Logger         *slog.Logger
 }
 
 type Handler struct {
-	options Options
-	limit   chan struct{}
+	options        Options
+	limit          chan struct{}
+	runtimeConfigs map[[32]byte][]byte
+	bootstraps     BootstrapsResponse
+}
+
+// BootstrapsResponse is the body of GET /v1/bootstraps: the Bootstrap of every
+// deployment, in the order of the deployments file.
+type BootstrapsResponse struct {
+	Bootstraps []Bootstrap `json:"bootstraps"`
+}
+
+// Bootstrap is one deployment's Bootstrap: its profile, its HOST_DATA in hex,
+// and its exact file bytes in unpadded base64url.
+type Bootstrap struct {
+	Profile   string `json:"profile"`
+	HostData  string `json:"host_data"`
+	Bootstrap string `json:"bootstrap"`
 }
 
 func NewHandler(options Options) (*Handler, error) {
@@ -50,7 +67,16 @@ func NewHandler(options Options) (*Handler, error) {
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
-	return &Handler{options: options, limit: make(chan struct{}, options.MaxConcurrency)}, nil
+	handler := &Handler{options: options, limit: make(chan struct{}, options.MaxConcurrency), runtimeConfigs: map[[32]byte][]byte{}}
+	for _, d := range options.Deployments {
+		handler.runtimeConfigs[d.HostData] = d.RuntimeConfig
+		handler.bootstraps.Bootstraps = append(handler.bootstraps.Bootstraps, Bootstrap{
+			Profile:   d.Profile,
+			HostData:  hex.EncodeToString(d.HostData[:]),
+			Bootstrap: veriprov1.EncodeBase64URL(d.Bootstrap),
+		})
+	}
+	return handler, nil
 }
 
 func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -76,6 +102,8 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 		handler.createChallenge(writer, request, id)
 	case "/v1/provision":
 		handler.provision(writer, request, id)
+	case "/v1/bootstraps":
+		handler.listBootstraps(writer, request, id)
 	default:
 		handler.writeError(writer, veriprov1.ErrInvalidField, "route not found", id)
 	}
@@ -87,6 +115,17 @@ func (handler *Handler) health(writer http.ResponseWriter, request *http.Request
 		return
 	}
 	_, _ = writer.Write([]byte("ok\n"))
+}
+
+// listBootstraps serves the Bootstraps, which are public: a CVM discloses its
+// own in every attestation response. Hosts fetch them to launch CVMs with the
+// exact bytes.
+func (handler *Handler) listBootstraps(writer http.ResponseWriter, request *http.Request, id string) {
+	if request.Method != http.MethodGet {
+		handler.methodNotAllowed(writer, id)
+		return
+	}
+	handler.writeJSON(writer, http.StatusOK, handler.bootstraps)
 }
 
 func (handler *Handler) createChallenge(writer http.ResponseWriter, request *http.Request, id string) {
@@ -156,7 +195,7 @@ func (handler *Handler) provision(writer http.ResponseWriter, request *http.Requ
 		handler.attestationError(writer, err, id)
 		return
 	}
-	runtimeConfig, ok := handler.options.Deployments[hostData]
+	runtimeConfig, ok := handler.runtimeConfigs[hostData]
 	if !ok {
 		handler.options.Logger.Warn("provision rejected: unknown HOST_DATA", "request_id", id, "host_data", hex.EncodeToString(hostData[:]))
 		handler.writeError(writer, veriprov1.ErrPolicyDenied, "HOST_DATA matches no deployment", id)

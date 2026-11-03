@@ -18,6 +18,7 @@ The [Protocol wire contract](https://github.com/verirelay/protocol/blob/main/doc
 | --- | --- | --- | --- |
 | `POST` | `/v1/challenge` | `ChallengeRequest` | `200` with `ChallengeResponse` |
 | `POST` | `/v1/provision` | `ProvisionRequest` | `200` with `ProvisionResponse` |
+| `GET` | `/v1/bootstraps` | none | `200` with the deployments' [Bootstraps](#bootstraps) |
 | `GET` | `/healthz` | none | `200` with plain-text `ok` |
 | `GET` | `/readyz` | none | `200` with plain-text `ok` |
 
@@ -50,6 +51,22 @@ VeriProv accepts an Attestation Report when all of these hold:
 The `ProvisionResponse` envelope carries that deployment's Runtime Config, sealed to `provisioning_public_key` and signed with the VeriProv Identity Key.
 
 Deployments and the Attestation policy are described in [Configuration](configuration.md).
+
+## Bootstraps
+
+`GET /v1/bootstraps` returns the Bootstrap of every deployment, in the order of the deployments file:
+
+```json
+{"bootstraps":[{"profile":"","host_data":"<64 hex chars>","bootstrap":"<unpadded base64url>"}]}
+```
+
+| Field | Content |
+| --- | --- |
+| `profile` | The Bootstrap's `profile`, empty when it has none. |
+| `host_data` | The SHA-256 of the Bootstrap bytes in hex: the `HOST_DATA` of CVMs launched with it. |
+| `bootstrap` | The exact Bootstrap file bytes. |
+
+A host puts these exact bytes on a CVM's Config Disk, and Deploy fetches them here. Bootstraps are public: a CVM discloses its own in every attestation response.
 
 ## Errors
 

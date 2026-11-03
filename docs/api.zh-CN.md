@@ -18,6 +18,7 @@ VeriProv 是 `veriprov/1` 配置下发的服务端。
 | --- | --- | --- | --- |
 | `POST` | `/v1/challenge` | `ChallengeRequest` | `200`，`ChallengeResponse` |
 | `POST` | `/v1/provision` | `ProvisionRequest` | `200`，`ProvisionResponse` |
+| `GET` | `/v1/bootstraps` | 无 | `200`，各部署的[引导文件](#引导文件) |
 | `GET` | `/healthz` | 无 | `200`，纯文本 `ok` |
 | `GET` | `/readyz` | 无 | `200`，纯文本 `ok` |
 
@@ -50,6 +51,22 @@ VeriProv 不保存 challenge 状态，所以使用相同 `VERIPROV_CHALLENGE_KEY
 `ProvisionResponse` 的 envelope 携带该部署的运行配置，加密给 `provisioning_public_key`，并用 VeriProv 身份密钥签名。
 
 部署和远程证明 policy 见 [配置](configuration.zh-CN.md)。
+
+## 引导文件
+
+`GET /v1/bootstraps` 按部署文件中的顺序，返回每个部署的引导文件：
+
+```json
+{"bootstraps":[{"profile":"","host_data":"<64 个 hex 字符>","bootstrap":"<无填充 base64url>"}]}
+```
+
+| 字段 | 内容 |
+| --- | --- |
+| `profile` | 引导文件的 `profile`，没有时为空。 |
+| `host_data` | 引导文件字节的 SHA-256（hex），也就是用它启动的 CVM 的 `HOST_DATA`。 |
+| `bootstrap` | 引导文件的原始字节。 |
+
+宿主机把这些原始字节放到 CVM 的配置盘上，Deploy 就从这里获取。引导文件是公开数据：CVM 在每次证明响应中都会披露自己的引导文件。
 
 ## 错误
 

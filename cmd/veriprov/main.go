@@ -49,8 +49,8 @@ func main() {
 		os.Exit(1)
 	}
 	hostData := make([]string, 0, len(cfg.Deployments))
-	for value := range cfg.Deployments {
-		hostData = append(hostData, hex.EncodeToString(value[:]))
+	for _, d := range cfg.Deployments {
+		hostData = append(hostData, hex.EncodeToString(d.HostData[:]))
 	}
 	slices.Sort(hostData)
 	logger.Info(

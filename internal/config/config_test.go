@@ -83,14 +83,18 @@ func TestLoadDeployments(t *testing.T) {
 	if len(config.Deployments) != 2 {
 		t.Fatalf("deployments = %d, want 2", len(config.Deployments))
 	}
-	for _, name := range []string{"bootstrap.json", "other-bootstrap.json"} {
+	for i, name := range []string{"bootstrap.json", "other-bootstrap.json"} {
 		data, err := os.ReadFile(filepath.Join(env.dir, name))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := config.Deployments[sha256.Sum256(data)]; string(got) != testRuntimeConfig {
-			t.Fatalf("runtime config for %s = %q", name, got)
+		d := config.Deployments[i]
+		if !bytes.Equal(d.Bootstrap, data) || d.HostData != sha256.Sum256(data) || string(d.RuntimeConfig) != testRuntimeConfig {
+			t.Fatalf("deployment %d for %s = %+v", i, name, d)
 		}
+	}
+	if config.Deployments[1].Profile != "b" {
+		t.Fatalf("profile = %q, want b", config.Deployments[1].Profile)
 	}
 	if !config.Attestation.SEVSNP.CheckRevocations || config.Attestation.SEVSNP.KDSCacheMaxEntries <= 0 || config.Attestation.SEVSNP.KDSCacheMaxBytes <= 0 {
 		t.Fatalf("SEV-SNP defaults = %+v", config.Attestation.SEVSNP)

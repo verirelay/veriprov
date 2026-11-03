@@ -19,11 +19,20 @@ type deployment struct {
 	RuntimeConfigFile string `json:"runtime_config_file"`
 }
 
-// loadDeployments reads the deployments file at path and returns each
-// deployment's Runtime Config keyed by the HOST_DATA of its Bootstrap. Every
-// Bootstrap must name identity as its identity_public_key, and no two
-// deployments may share a Bootstrap.
-func loadDeployments(path string, identity ed25519.PublicKey) (map[[32]byte][]byte, error) {
+// Deployment pairs a Bootstrap with the Runtime Config provisioned to CVMs
+// launched with it.
+type Deployment struct {
+	// Bootstrap is the exact Bootstrap file bytes; HostData is their SHA-256.
+	Bootstrap     []byte
+	HostData      [32]byte
+	Profile       string
+	RuntimeConfig []byte
+}
+
+// loadDeployments reads the deployments file at path and returns its
+// deployments in file order. Every Bootstrap must name identity as its
+// identity_public_key, and no two deployments may share a Bootstrap.
+func loadDeployments(path string, identity ed25519.PublicKey) ([]Deployment, error) {
 	data, err := readFile("VERIPROV_DEPLOYMENTS_FILE", path)
 	if err != nil {
 		return nil, err
@@ -41,48 +50,51 @@ func loadDeployments(path string, identity ed25519.PublicKey) (map[[32]byte][]by
 		}
 		return filepath.Join(filepath.Dir(path), file)
 	}
-	deployments := make(map[[32]byte][]byte, len(entries))
+	deployments := make([]Deployment, 0, len(entries))
+	seen := make(map[[32]byte]bool, len(entries))
 	for i, entry := range entries {
 		name := fmt.Sprintf("deployment %d", i)
 		if entry.BootstrapFile == "" || entry.RuntimeConfigFile == "" {
 			return nil, fmt.Errorf("%s: bootstrap_file and runtime_config_file are required", name)
 		}
-		hostData, err := loadBootstrap(resolve(entry.BootstrapFile), identity)
+		d, err := loadBootstrap(resolve(entry.BootstrapFile), identity)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
-		if _, duplicate := deployments[hostData]; duplicate {
-			return nil, fmt.Errorf("%s: bootstrap_file repeats the Bootstrap of an earlier deployment (HOST_DATA %s)", name, hex.EncodeToString(hostData[:]))
+		if seen[d.HostData] {
+			return nil, fmt.Errorf("%s: bootstrap_file repeats the Bootstrap of an earlier deployment (HOST_DATA %s)", name, hex.EncodeToString(d.HostData[:]))
 		}
-		runtimeConfig, err := loadRuntimeConfig(resolve(entry.RuntimeConfigFile))
-		if err != nil {
+		seen[d.HostData] = true
+		if d.RuntimeConfig, err = loadRuntimeConfig(resolve(entry.RuntimeConfigFile)); err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
-		deployments[hostData] = runtimeConfig
+		deployments = append(deployments, d)
 	}
 	return deployments, nil
 }
 
-func loadBootstrap(path string, identity ed25519.PublicKey) ([32]byte, error) {
+// loadBootstrap returns the deployment of the Bootstrap at path, without its
+// Runtime Config.
+func loadBootstrap(path string, identity ed25519.PublicKey) (Deployment, error) {
 	data, err := readFile("bootstrap_file", path)
 	if err != nil {
-		return [32]byte{}, err
+		return Deployment{}, err
 	}
 	bootstrap, err := guest.DecodeBootstrap(data)
 	if err != nil {
-		return [32]byte{}, fmt.Errorf("bootstrap_file: %w", err)
+		return Deployment{}, fmt.Errorf("bootstrap_file: %w", err)
 	}
 	if err := bootstrap.Validate(); err != nil {
-		return [32]byte{}, fmt.Errorf("bootstrap_file: %w", err)
+		return Deployment{}, fmt.Errorf("bootstrap_file: %w", err)
 	}
 	key, err := bootstrap.IdentityKey()
 	if err != nil {
-		return [32]byte{}, fmt.Errorf("bootstrap_file: %w", err)
+		return Deployment{}, fmt.Errorf("bootstrap_file: %w", err)
 	}
 	if !key.Equal(identity) {
-		return [32]byte{}, fmt.Errorf("bootstrap_file: identity_public_key is not the public key of VERIPROV_IDENTITY_KEY_FILE, %s", veriprov1.EncodeBase64URL(identity))
+		return Deployment{}, fmt.Errorf("bootstrap_file: identity_public_key is not the public key of VERIPROV_IDENTITY_KEY_FILE, %s", veriprov1.EncodeBase64URL(identity))
 	}
-	return guest.HostData(data), nil
+	return Deployment{Bootstrap: data, HostData: guest.HostData(data), Profile: bootstrap.Profile}, nil
 }
 
 func loadRuntimeConfig(path string) ([]byte, error) {

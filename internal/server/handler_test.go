@@ -6,6 +6,8 @@ import (
 	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -18,10 +20,12 @@ import (
 	"github.com/verirelay/protocol/veriprov1"
 	"github.com/verirelay/veriprov/internal/attestation"
 	"github.com/verirelay/veriprov/internal/challenge"
+	"github.com/verirelay/veriprov/internal/config"
 )
 
 var (
-	testHostData      = [32]byte{9}
+	testBootstrap     = []byte(`{"version":"veriprov-bootstrap/1","protocol":"veriprov/1","url":"https://veriprov.example.com","identity_public_key":"E0mn567myKlD1eCT3Ux89j0IoSwK_zJ4BdQtBrq7Bbs","profile":"a"}`)
+	testHostData      = sha256.Sum256(testBootstrap)
 	testRuntimeConfig = []byte(`{"version":"verirelay-runtime-config/1","admin_token":"test-only-admin-token"}`)
 )
 
@@ -54,7 +58,7 @@ func newTestServer(t *testing.T, verifier attestation.Verifier) testServer {
 		Challenges:     challenges,
 		Verifier:       verifier,
 		IdentityKey:    identity,
-		Deployments:    map[[32]byte][]byte{testHostData: testRuntimeConfig},
+		Deployments:    []config.Deployment{{Bootstrap: testBootstrap, HostData: testHostData, Profile: "a", RuntimeConfig: testRuntimeConfig}},
 		MaxBodyBytes:   1 << 20,
 		MaxConcurrency: 1,
 		Logger:         slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil)),
@@ -114,6 +118,26 @@ func TestHealthEndpoints(t *testing.T) {
 		if response := server.do(t, http.MethodPost, path, nil); response.Code != http.StatusBadRequest {
 			t.Fatalf("POST %s = %d, want 400", path, response.Code)
 		}
+	}
+}
+
+func TestBootstraps(t *testing.T) {
+	server := newTestServer(t, testVerifier{hostData: testHostData})
+	response := server.do(t, http.MethodGet, "/v1/bootstraps", nil)
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("GET /v1/bootstraps = %d %v", response.Code, response.Header())
+	}
+	var body BootstrapsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || len(body.Bootstraps) != 1 {
+		t.Fatalf("body %q: %v", response.Body.String(), err)
+	}
+	got := body.Bootstraps[0]
+	data, err := veriprov1.DecodeBase64URL(got.Bootstrap, "bootstrap", -1)
+	if err != nil || !bytes.Equal(data, testBootstrap) || got.HostData != hex.EncodeToString(testHostData[:]) || got.Profile != "a" {
+		t.Fatalf("bootstrap %+v: %v", got, err)
+	}
+	if response := server.do(t, http.MethodPost, "/v1/bootstraps", nil); response.Code != http.StatusBadRequest {
+		t.Fatalf("POST /v1/bootstraps = %d, want 400", response.Code)
 	}
 }
 

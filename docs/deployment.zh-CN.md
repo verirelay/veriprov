@@ -41,7 +41,7 @@ printf '{"version":"veriprov-bootstrap/1","protocol":"veriprov/1","url":"https:/
 
 字段见 [Guest 文件](https://github.com/verirelay/protocol/blob/main/docs/guest.zh-CN.md)的「引导文件（Bootstrap）」一节。每个部署都需要各自不同的引导文件字节。用 `profile` 区分原本会完全相同的引导文件。
 
-运营者启动每个 CVM 时，把这个文件的原始字节放在配置盘上，并把它的 SHA-256 作为 `host-data`，做法见 VeriForge 的 [QEMU 验证](https://github.com/verirelay/veriforge/blob/main/docs/qemu.zh-CN.md)中「SEV-SNP 启动」一节。
+运营者启动每个 CVM 时，把这个文件的原始字节放在配置盘上，并把它的 SHA-256 作为 `host-data`，做法见 VeriForge 的 [QEMU 验证](https://github.com/verirelay/veriforge/blob/main/docs/qemu.zh-CN.md)中「SEV-SNP 启动」一节。VeriProv 在 [`GET /v1/bootstraps`](api.zh-CN.md#引导文件) 提供这些原始字节，所以运行 CVM 的宿主机不需要另外复制这个文件。
 
 VeriProv 配置的也是同一个文件：任何字节差异（包括空白或末尾换行）都会改变 `HOST_DATA`。`HOST_DATA` 不属于任何部署的 CVM 会收到 `409 policy.denied`。
 
@@ -63,7 +63,7 @@ printf '{"allowed_measurements":["%s"]}' "<96 个小写十六进制字符>" > at
 
 ## docker-compose.yaml
 
-仓库根目录的 [`docker-compose.yaml`](../docker-compose.yaml) 以加固方式运行已发布的镜像 `ghcr.io/verirelay/veriprov:v0.1.0`：
+仓库根目录的 [`docker-compose.yaml`](../docker-compose.yaml) 以加固方式运行已发布的镜像 `ghcr.io/verirelay/veriprov:v0.2.0`：
 
 - 只读 rootfs
 - drop 全部 capabilities

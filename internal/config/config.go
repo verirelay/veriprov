@@ -29,9 +29,8 @@ type Config struct {
 	ChallengeTTL      time.Duration
 	ChallengeKey      []byte
 	IdentityKey       ed25519.PrivateKey
-	// Deployments maps the HOST_DATA of each deployment's Bootstrap to its
-	// Runtime Config bytes.
-	Deployments map[[32]byte][]byte
+	// Deployments are in the order of the deployments file.
+	Deployments []Deployment
 	Attestation AttestationConfig
 }
 
