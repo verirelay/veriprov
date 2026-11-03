@@ -70,10 +70,19 @@ The root [`docker-compose.yaml`](../docker-compose.yaml) runs the published imag
 - `no-new-privileges`
 - A `127.0.0.1:8080` port mapping
 
-The container runs as UID 65532 (`nonroot`), so the files must be readable by that user. From the repository root:
+The container runs as `VERIPROV_UID:VERIPROV_GID`, which must be able to read `production-secrets/`. Set them in a `.env` file next to `docker-compose.yaml`:
+
+| Setup | `.env` | Owner of `production-secrets/` |
+| --- | --- | --- |
+| Default | none: the image's `nonroot` user, UID 65532 | `sudo chown -R 65532:65532 production-secrets` |
+| Docker, as your own user | `VERIPROV_UID` and `VERIPROV_GID` set to your `id -u` and `id -g` | you |
+| Rootless Docker or Podman | `VERIPROV_UID=0` and `VERIPROV_GID=0` | you |
+
+In rootless mode, UID 0 in the container is you on the host, not root. With rootful Docker it is root, so use your own IDs there instead.
+
+Then, from the repository root:
 
 ```bash
-sudo chown -R 65532:65532 production-secrets
 docker compose up -d
 ```
 

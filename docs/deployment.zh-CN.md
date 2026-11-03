@@ -70,10 +70,19 @@ printf '{"allowed_measurements":["%s"]}' "<96 个小写十六进制字符>" > at
 - `no-new-privileges`
 - 端口映射 `127.0.0.1:8080`
 
-容器以 UID 65532（`nonroot`）运行，文件必须对该用户可读。在仓库根目录执行：
+容器以 `VERIPROV_UID:VERIPROV_GID` 运行，这个用户必须能读取 `production-secrets/`。在 `docker-compose.yaml` 旁边的 `.env` 文件中设置：
+
+| 环境 | `.env` | `production-secrets/` 的属主 |
+| --- | --- | --- |
+| 默认 | 不设置：使用镜像自带的 `nonroot` 用户，UID 65532 | `sudo chown -R 65532:65532 production-secrets` |
+| Docker，以你自己的用户运行 | `VERIPROV_UID` 和 `VERIPROV_GID` 设为你的 `id -u` 和 `id -g` | 你自己 |
+| rootless Docker 或 Podman | `VERIPROV_UID=0`、`VERIPROV_GID=0` | 你自己 |
+
+rootless 模式下，容器里的 UID 0 在宿主机上就是你自己，不是 root。rootful Docker 下它就是 root，所以那里请改用你自己的 ID。
+
+然后在仓库根目录执行：
 
 ```bash
-sudo chown -R 65532:65532 production-secrets
 docker compose up -d
 ```
 
