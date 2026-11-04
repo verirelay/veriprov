@@ -205,6 +205,9 @@ func (getter *KDSGetter) Get(rawURL string) ([]byte, error) {
 // it. The fetch runs detached from ctx and fills the cache even when ctx ends
 // first; its duration is bounded by the retry settings alone. Callers asking
 // for a resource already being fetched share that fetch.
+//
+// A fetched VCEK is cached only once a report verified against it, so reports
+// that fail verification cannot fill the cache.
 func (getter *KDSGetter) GetContext(ctx context.Context, rawURL string) ([]byte, error) {
 	if getter == nil {
 		return nil, errors.New("AMD KDS getter is nil")
@@ -237,22 +240,78 @@ func (getter *KDSGetter) GetContext(ctx context.Context, rawURL string) ([]byte,
 	}
 }
 
-// load reads key from the disk cache or fetches it, stores the result in the
-// memory cache, and completes call.
+// load reads key from the disk cache or fetches it, caches the result unless
+// it is a fetched VCEK, and completes call.
 func (getter *KDSGetter) load(key, requestURL string, call *kdsCall) {
 	entry, err := getter.readPersistent(key)
+	cache := err == nil
 	if err != nil {
 		entry, err = getter.fetch(key, requestURL)
+		cache = err == nil && !isVCEKURL(key)
+		if cache {
+			_ = getter.writePersistent(key, entry.body)
+		}
 	}
 	getter.mu.Lock()
 	defer getter.mu.Unlock()
-	if err == nil {
+	if cache {
 		getter.storeMemory(key, entry)
+	}
+	if err == nil {
 		call.body = entry.body
 	}
 	call.err = err
 	delete(getter.inflight, key)
 	close(call.done)
+}
+
+// keep caches body as the VCEK at rawURL. Call it only once a report verified
+// against body.
+func (getter *KDSGetter) keep(rawURL string, body []byte) {
+	key, _, err := getter.canonicalURL(rawURL)
+	if err != nil {
+		return
+	}
+	getter.mu.Lock()
+	_, cached := getter.cache[key]
+	if !cached {
+		getter.storeMemory(key, kdsEntry{body: body})
+	}
+	getter.mu.Unlock()
+	if !cached {
+		_ = getter.writePersistent(key, body)
+	}
+}
+
+// vcekRecorder serves the AMD KDS requests of one report from getter and
+// remembers the VCEK among them, for keep once the report verified.
+type vcekRecorder struct {
+	getter *KDSGetter
+	url    string
+	vcek   []byte
+}
+
+func (recorder *vcekRecorder) Get(rawURL string) ([]byte, error) {
+	return recorder.GetContext(context.Background(), rawURL)
+}
+
+func (recorder *vcekRecorder) GetContext(ctx context.Context, rawURL string) ([]byte, error) {
+	body, err := recorder.getter.GetContext(ctx, rawURL)
+	if err == nil && isVCEKURL(rawURL) {
+		recorder.url, recorder.vcek = rawURL, body
+	}
+	return body, err
+}
+
+func (recorder *vcekRecorder) keep() {
+	if recorder.vcek != nil {
+		recorder.getter.keep(recorder.url, recorder.vcek)
+	}
+}
+
+func isVCEKURL(rawURL string) bool {
+	_, err := kds.ParseVCEKCertURL(rawURL)
+	return err == nil
 }
 
 func (getter *KDSGetter) canonicalURL(rawURL string) (string, string, error) {
@@ -314,7 +373,6 @@ func (getter *KDSGetter) fetch(cacheURL, endpoint string) (kdsEntry, error) {
 		if err == nil {
 			var expires time.Time
 			if expires, err = validateKDSBody(cacheURL, body, getter.now()); err == nil {
-				_ = getter.writePersistent(cacheURL, body)
 				return kdsEntry{body: body, expires: expires}, nil
 			}
 		}

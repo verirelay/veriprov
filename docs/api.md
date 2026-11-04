@@ -40,17 +40,30 @@ VeriProv keeps no challenge state, so replicas with the same `VERIPROV_CHALLENGE
 
 VeriProv accepts an Attestation Report when all of these hold:
 
-- It is VCEK-signed and verifies against the AMD certificates from AMD KDS and, with revocation checking on, a current AMD CRL.
 - Its `REPORT_DATA` matches the challenge binding.
+- Its `CHIP_ID` is in the `allowed_chip_ids` of some deployment. VeriProv checks this before it contacts AMD KDS.
+- It is VCEK-signed and verifies against the AMD certificates from AMD KDS and, with revocation checking on, a current AMD CRL.
 - Its guest policy forbids debugging and migration agents (SMT is allowed).
 - Its VMPL is 0.
 - Its TCB fields are consistent with each other and with the VCEK.
+- It meets the AMD platform baseline in [`avr/1` Receipts](https://github.com/verirelay/protocol/blob/main/docs/avr1.md), section "Platform baseline": its CPU model has a minimum, `REPORTED_TCB` and `LAUNCH_TCB` are at or above it, and `PLATFORM_INFO` has `ALIAS_CHECK_COMPLETE` set.
 - Its Launch Measurement is in the Attestation policy.
 - Its `HOST_DATA` belongs to a deployment, that is, it is the SHA-256 of one of the configured Bootstraps.
+- Its `CHIP_ID` is in that deployment's `allowed_chip_ids`.
 
 The `ProvisionResponse` envelope carries that deployment's Runtime Config, sealed to `provisioning_public_key` and signed with the VeriProv Identity Key.
 
 Deployments and the Attestation policy are described in [Configuration](configuration.md).
+
+VeriProv logs every refused report at `warn` level with its `request_id`:
+
+| Message | Fields |
+| --- | --- |
+| `attestation verification failed` | `error` names the failed check. A platform baseline failure names the CPU model, its minimum `TCB_VERSION` and the AMD bulletins. |
+| `provision rejected: unknown HOST_DATA` | The verified `host_data` and `chip_id`. |
+| `provision rejected: CHIP_ID not in the deployment's allowed_chip_ids` | The verified `host_data` and `chip_id`. |
+
+A report whose `CHIP_ID` no deployment allows fails before verification, and its unverified `CHIP_ID` is not logged.
 
 ## Bootstraps
 

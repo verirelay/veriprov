@@ -25,7 +25,7 @@ func main() {
 		os.Exit(1)
 	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
-	verifier, err := newVerifier(cfg.Attestation, cfg.MaxConcurrency, logger)
+	verifier, err := newVerifier(cfg.Attestation, cfg.Deployments, cfg.MaxConcurrency, logger)
 	if err != nil {
 		logger.Error("create attestation verifier", "error", err)
 		os.Exit(1)
@@ -76,12 +76,17 @@ func main() {
 	}
 }
 
-// newVerifier allows maxConcurrency AMD KDS fetches at once, the bound the
-// server's concurrency limit puts on the requests that start them.
-func newVerifier(cfg config.AttestationConfig, maxConcurrency int, logger *slog.Logger) (*sevsnp.Verifier, error) {
+// newVerifier allows the chips of every deployment, and maxConcurrency AMD KDS
+// fetches at once, the bound the server's concurrency limit puts on the
+// requests that start them.
+func newVerifier(cfg config.AttestationConfig, deployments []config.Deployment, maxConcurrency int, logger *slog.Logger) (*sevsnp.Verifier, error) {
 	policy, err := sevsnp.DecodePolicy(cfg.Policy)
 	if err != nil {
 		return nil, err
+	}
+	var chipIDs [][64]byte
+	for _, d := range deployments {
+		chipIDs = append(chipIDs, d.AllowedChipIDs...)
 	}
 	getter, err := sevsnp.NewKDSGetter(sevsnp.KDSGetterOptions{
 		MaxAttempts:     cfg.SEVSNP.KDSMaxAttempts,
@@ -99,6 +104,7 @@ func newVerifier(cfg config.AttestationConfig, maxConcurrency int, logger *slog.
 	}
 	verifier, err := sevsnp.NewVerifier(sevsnp.VerifierOptions{
 		Policy:           policy,
+		AllowedChipIDs:   chipIDs,
 		Getter:           getter,
 		CheckRevocations: cfg.SEVSNP.CheckRevocations,
 	})

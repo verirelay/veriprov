@@ -27,21 +27,24 @@ var (
 	testBootstrap     = []byte(`{"version":"veriprov-bootstrap/1","protocol":"veriprov/1","url":"https://veriprov.example.com","identity_public_key":"E0mn567myKlD1eCT3Ux89j0IoSwK_zJ4BdQtBrq7Bbs","profile":"a"}`)
 	testHostData      = sha256.Sum256(testBootstrap)
 	testRuntimeConfig = []byte(`{"version":"verirelay-runtime-config/1","admin_token":"test-only-admin-token"}`)
+	testChipID        = [64]byte(bytes.Repeat([]byte{0xa1}, 64))
+	testReport        = attestation.Report{HostData: testHostData, ChipID: testChipID}
 )
 
 type testVerifier struct {
-	hostData [32]byte
-	err      error
+	report attestation.Report
+	err    error
 }
 
-func (verifier testVerifier) Verify(context.Context, []byte, [64]byte) ([32]byte, error) {
-	return verifier.hostData, verifier.err
+func (verifier testVerifier) Verify(context.Context, []byte, [64]byte) (attestation.Report, error) {
+	return verifier.report, verifier.err
 }
 
 type testServer struct {
 	handler    *Handler
 	challenges *challenge.Issuer
 	identity   ed25519.PrivateKey
+	logs       *bytes.Buffer
 }
 
 func newTestServer(t *testing.T, verifier attestation.Verifier) testServer {
@@ -54,19 +57,20 @@ func newTestServer(t *testing.T, verifier attestation.Verifier) testServer {
 	if err != nil {
 		t.Fatal(err)
 	}
+	logs := &bytes.Buffer{}
 	handler, err := NewHandler(Options{
 		Challenges:     challenges,
 		Verifier:       verifier,
 		IdentityKey:    identity,
-		Deployments:    []config.Deployment{{Bootstrap: testBootstrap, HostData: testHostData, Profile: "a", RuntimeConfig: testRuntimeConfig}},
+		Deployments:    []config.Deployment{{Bootstrap: testBootstrap, HostData: testHostData, Profile: "a", RuntimeConfig: testRuntimeConfig, AllowedChipIDs: [][64]byte{testChipID}}},
 		MaxBodyBytes:   1 << 20,
 		MaxConcurrency: 1,
-		Logger:         slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil)),
+		Logger:         slog.New(slog.NewTextHandler(logs, nil)),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return testServer{handler: handler, challenges: challenges, identity: identity}
+	return testServer{handler: handler, challenges: challenges, identity: identity, logs: logs}
 }
 
 func (server testServer) do(t *testing.T, method, path string, body []byte) *httptest.ResponseRecorder {
@@ -110,7 +114,7 @@ func provisionBody(challengeID string, publicKey []byte) []byte {
 }
 
 func TestHealthEndpoints(t *testing.T) {
-	server := newTestServer(t, testVerifier{hostData: testHostData})
+	server := newTestServer(t, testVerifier{report: testReport})
 	for _, path := range []string{"/healthz", "/readyz"} {
 		if response := server.do(t, http.MethodGet, path, nil); response.Code != http.StatusOK || response.Body.String() != "ok\n" {
 			t.Fatalf("GET %s = %d %q", path, response.Code, response.Body.String())
@@ -122,7 +126,7 @@ func TestHealthEndpoints(t *testing.T) {
 }
 
 func TestBootstraps(t *testing.T) {
-	server := newTestServer(t, testVerifier{hostData: testHostData})
+	server := newTestServer(t, testVerifier{report: testReport})
 	response := server.do(t, http.MethodGet, "/v1/bootstraps", nil)
 	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("GET /v1/bootstraps = %d %v", response.Code, response.Header())
@@ -142,7 +146,7 @@ func TestBootstraps(t *testing.T) {
 }
 
 func TestChallengeResponse(t *testing.T) {
-	server := newTestServer(t, testVerifier{hostData: testHostData})
+	server := newTestServer(t, testVerifier{report: testReport})
 	response := server.do(t, http.MethodPost, "/v1/challenge", []byte(`{"future_field":1}`))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
@@ -171,7 +175,7 @@ func TestChallengeResponse(t *testing.T) {
 }
 
 func TestProvisionReturnsSignedSealedRuntimeConfig(t *testing.T) {
-	server := newTestServer(t, testVerifier{hostData: testHostData})
+	server := newTestServer(t, testVerifier{report: testReport})
 	privateKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -205,19 +209,37 @@ func TestProvisionReturnsSignedSealedRuntimeConfig(t *testing.T) {
 	}
 }
 
-func TestProvisionRejectsUnknownHostData(t *testing.T) {
-	server := newTestServer(t, testVerifier{hostData: [32]byte{1}})
-	response := server.do(t, http.MethodPost, "/v1/provision", provisionBody(server.challenge(t, time.Now()), bytes.Repeat([]byte{1}, veriprov1.X25519PublicKeySize)))
-	if response.Code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", response.Code)
+func TestProvisionRejectsReportsNoDeploymentAllows(t *testing.T) {
+	cases := []struct {
+		name   string
+		report attestation.Report
+		log    string
+	}{
+		{"unknown HOST_DATA", attestation.Report{HostData: [32]byte{1}, ChipID: testChipID}, "unknown HOST_DATA"},
+		{"CHIP_ID not allowed", attestation.Report{HostData: testHostData, ChipID: [64]byte{1}}, "allowed_chip_ids"},
 	}
-	if code := errorCode(t, response); code != veriprov1.ErrPolicyDenied {
-		t.Fatalf("code = %q, want %q", code, veriprov1.ErrPolicyDenied)
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			server := newTestServer(t, testVerifier{report: test.report})
+			response := server.do(t, http.MethodPost, "/v1/provision", provisionBody(server.challenge(t, time.Now()), bytes.Repeat([]byte{1}, veriprov1.X25519PublicKeySize)))
+			if response.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409", response.Code)
+			}
+			if code := errorCode(t, response); code != veriprov1.ErrPolicyDenied {
+				t.Fatalf("code = %q, want %q", code, veriprov1.ErrPolicyDenied)
+			}
+			logs := server.logs.String()
+			for _, want := range []string{test.log, "host_data=" + hex.EncodeToString(test.report.HostData[:]), "chip_id=" + hex.EncodeToString(test.report.ChipID[:])} {
+				if !strings.Contains(logs, want) {
+					t.Fatalf("logs %q do not contain %q", logs, want)
+				}
+			}
+		})
 	}
 }
 
 func TestProvisionChallengeErrors(t *testing.T) {
-	server := newTestServer(t, testVerifier{hostData: testHostData})
+	server := newTestServer(t, testVerifier{report: testReport})
 	foreign, err := challenge.NewIssuer(bytes.Repeat([]byte{2}, challenge.KeySize), time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +285,7 @@ func TestProvisionAttestationErrorMapping(t *testing.T) {
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
-			server := newTestServer(t, testVerifier{hostData: testHostData, err: test.verifierError})
+			server := newTestServer(t, testVerifier{report: testReport, err: test.verifierError})
 			response := server.do(t, http.MethodPost, "/v1/provision", provisionBody(server.challenge(t, time.Now()), bytes.Repeat([]byte{1}, veriprov1.X25519PublicKeySize)))
 			if response.Code != veriprov1.StatusForError(test.code) {
 				t.Fatalf("status = %d, want %d", response.Code, veriprov1.StatusForError(test.code))
@@ -276,7 +298,7 @@ func TestProvisionAttestationErrorMapping(t *testing.T) {
 }
 
 func TestProvisionRequestErrors(t *testing.T) {
-	server := newTestServer(t, testVerifier{hostData: testHostData})
+	server := newTestServer(t, testVerifier{report: testReport})
 	valid := provisionBody(server.challenge(t, time.Now()), bytes.Repeat([]byte{1}, veriprov1.X25519PublicKeySize))
 	cases := []struct {
 		name string

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 
 	"github.com/verirelay/protocol/guest"
 	"github.com/verirelay/protocol/veriprov1"
@@ -15,23 +16,26 @@ import (
 // deployment is one entry of the deployments file. Relative paths are relative
 // to the directory of the deployments file.
 type deployment struct {
-	BootstrapFile     string `json:"bootstrap_file"`
-	RuntimeConfigFile string `json:"runtime_config_file"`
+	BootstrapFile     string   `json:"bootstrap_file"`
+	RuntimeConfigFile string   `json:"runtime_config_file"`
+	AllowedChipIDs    []string `json:"allowed_chip_ids"`
 }
 
 // Deployment pairs a Bootstrap with the Runtime Config provisioned to CVMs
-// launched with it.
+// launched with it on the allowed chips.
 type Deployment struct {
 	// Bootstrap is the exact Bootstrap file bytes; HostData is their SHA-256.
-	Bootstrap     []byte
-	HostData      [32]byte
-	Profile       string
-	RuntimeConfig []byte
+	Bootstrap      []byte
+	HostData       [32]byte
+	Profile        string
+	RuntimeConfig  []byte
+	AllowedChipIDs [][64]byte
 }
 
 // loadDeployments reads the deployments file at path and returns its
 // deployments in file order. Every Bootstrap must name identity as its
-// identity_public_key, and no two deployments may share a Bootstrap.
+// identity_public_key, no two deployments may share a Bootstrap, and every
+// deployment must allow at least one chip.
 func loadDeployments(path string, identity ed25519.PublicKey) ([]Deployment, error) {
 	data, err := readFile("VERIPROV_DEPLOYMENTS_FILE", path)
 	if err != nil {
@@ -68,9 +72,33 @@ func loadDeployments(path string, identity ed25519.PublicKey) ([]Deployment, err
 		if d.RuntimeConfig, err = loadRuntimeConfig(resolve(entry.RuntimeConfigFile)); err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
+		if d.AllowedChipIDs, err = parseChipIDs(entry.AllowedChipIDs); err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
 		deployments = append(deployments, d)
 	}
 	return deployments, nil
+}
+
+// parseChipIDs decodes a non-empty list of unique CHIP_IDs, each 128
+// lowercase hex characters.
+func parseChipIDs(values []string) ([][64]byte, error) {
+	if len(values) == 0 {
+		return nil, errors.New("allowed_chip_ids must list at least one CHIP_ID")
+	}
+	chipIDs := make([][64]byte, 0, len(values))
+	for _, value := range values {
+		decoded, err := hex.DecodeString(value)
+		if err != nil || len(decoded) != 64 || hex.EncodeToString(decoded) != value {
+			return nil, fmt.Errorf("allowed_chip_ids: %q is not 128 lowercase hex characters", value)
+		}
+		chipID := [64]byte(decoded)
+		if slices.Contains(chipIDs, chipID) {
+			return nil, fmt.Errorf("allowed_chip_ids: %q is listed twice", value)
+		}
+		chipIDs = append(chipIDs, chipID)
+	}
+	return chipIDs, nil
 }
 
 // loadBootstrap returns the deployment of the Bootstrap at path, without its

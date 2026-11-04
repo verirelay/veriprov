@@ -50,20 +50,40 @@ The startup log lists the `HOST_DATA` of every deployment in hex, as `sha256sum 
 ## Deployments
 
 1. Write the Runtime Config for the CVMs launched with the Bootstrap.
-2. List the pair in the deployments file.
+2. List the pair in the deployments file, with the `CHIP_ID`s of the [hosts](#hosts) that run those CVMs.
 3. Allow the Launch Measurements those CVMs may run.
 
 ```bash
 printf '{"version":"verirelay-runtime-config/1","admin_token":"%s"}' "$(openssl rand -hex 32)" > runtime-config.json
-printf '[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json"}]' > deployments.json
+printf '[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json","allowed_chip_ids":["%s"]}]' "<128 lowercase hex chars>" > deployments.json
 printf '{"allowed_measurements":["%s"]}' "<96 lowercase hex chars>" > attestation-policy.json
 ```
 
 Each release lists its Launch Measurements, one per vCPU count. See Release's [Launch Measurement](https://github.com/verirelay/release/blob/main/docs/launch-measurement.md).
 
+## Hosts
+
+A CVM receives its Runtime Config only on a host that meets both:
+
+- The host's `CHIP_ID` is in the deployment's `allowed_chip_ids`. Every AMD SEV-SNP CPU has its own `CHIP_ID`, 64 bytes that its Attestation Reports carry.
+- The host meets the AMD platform baseline in [`avr/1` Receipts](https://github.com/verirelay/protocol/blob/main/docs/avr1.md), section "Platform baseline": SNP firmware and microcode at or above its CPU model's minimum, and `ALIAS_CHECK_COMPLETE` set.
+
+Otherwise the CVM gets `409 policy.denied`, and VeriProv logs the reason, as listed in [Service API](api.md#provisioning).
+
+List only hosts you operate, and add a host to `allowed_chip_ids` before you move CVMs to it. A host's `CHIP_ID` is shown by any of these:
+
+- On the host, [`snphost`](https://github.com/virtee/snphost) prints it in uppercase hex:
+
+  ```bash
+  snphost show identifier | tr 'A-F' 'a-f'
+  ```
+
+- A VeriRelay CVM on the host logs its `CHIP_ID` as `chip_id` in the line `bootstrap matches HOST_DATA` on every provisioning attempt, as described in VeriRelay's [configuration.md](https://github.com/verirelay/verirelay/blob/main/docs/configuration.md), section "Production startup".
+- When the host is already listed for another deployment, VeriProv logs `provision rejected: CHIP_ID not in the deployment's allowed_chip_ids` with the verified `chip_id` and the `host_data` it asked for.
+
 ## docker-compose.yaml
 
-The root [`docker-compose.yaml`](../docker-compose.yaml) runs the published image `ghcr.io/verirelay/veriprov:v0.2.0`, hardened:
+The root [`docker-compose.yaml`](../docker-compose.yaml) runs the published image `ghcr.io/verirelay/veriprov:v0.3.0`, hardened:
 
 - Read-only rootfs
 - All capabilities dropped

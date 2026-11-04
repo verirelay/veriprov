@@ -38,18 +38,19 @@ Both keys are secrets. Every replica uses the same two keys. [Deployment](deploy
 
 The deployments file is a non-empty JSON list. It is decoded strictly: unknown fields and duplicate keys are rejected.
 
-Each entry pairs a Bootstrap with the Runtime Config provisioned to CVMs launched with it:
+Each entry pairs a Bootstrap with the Runtime Config provisioned to CVMs launched with it, and lists the hosts those CVMs may run on:
 
 ```json
-[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json"}]
+[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json","allowed_chip_ids":["<128 lowercase hex chars>"]}]
 ```
 
 | Field | Rule |
 | --- | --- |
 | `bootstrap_file` | Required. Path to a Bootstrap file. |
 | `runtime_config_file` | Required. Path to a Runtime Config file. |
+| `allowed_chip_ids` | Required. The `CHIP_ID`s of the hosts whose CVMs receive this Runtime Config: a non-empty list of unique 64-byte values in lowercase hex. [Deployment](deployment.md#hosts) shows how to find a host's `CHIP_ID`. |
 
-A relative path in either field is relative to the directory of the deployments file.
+A relative path in either file field is relative to the directory of the deployments file.
 
 At startup VeriProv checks every entry:
 
@@ -57,10 +58,11 @@ At startup VeriProv checks every entry:
 - The Bootstrap's `identity_public_key` is the public key of `VERIPROV_IDENTITY_KEY_FILE`.
 - No two entries have the same Bootstrap bytes.
 - The Runtime Config is a valid `verirelay-runtime-config/1` object, as specified in the [Protocol wire contract](https://github.com/verirelay/protocol/blob/main/docs/veriprov1.md), section "Runtime Config" (schema: [`schemas/veriprov1/verirelay_runtime_config.schema.json`](https://github.com/verirelay/protocol/blob/main/schemas/veriprov1/verirelay_runtime_config.schema.json)).
+- `allowed_chip_ids` lists at least one `CHIP_ID`, each 128 lowercase hex characters, none twice.
 
 What each Runtime Config field does is described in VeriRelay's [configuration.md](https://github.com/verirelay/verirelay/blob/main/docs/configuration.md), section "Runtime Config from VeriProv".
 
-A deployment's `HOST_DATA` is the SHA-256 of its exact Bootstrap file bytes. A provision request whose Attestation Report carries that `HOST_DATA` receives the exact bytes of the deployment's Runtime Config file.
+A deployment's `HOST_DATA` is the SHA-256 of its exact Bootstrap file bytes. A provision request whose Attestation Report carries that `HOST_DATA` and one of the deployment's `allowed_chip_ids` receives the exact bytes of the deployment's Runtime Config file.
 
 Runtime Config is a secret, `admin_token` and store passwords included.
 
@@ -82,7 +84,7 @@ Runtime Config is a secret, `admin_token` and store passwords included.
 
 Exactly one of the two policy variables is required.
 
-VeriProv fetches AMD certificates and CRLs from AMD KDS (`kdsintf.amd.com`) and caches them. With revocation checking on, provision requests fail with `503 service.unavailable` while no current CRL can be obtained.
+VeriProv fetches AMD certificates and CRLs from AMD KDS (`kdsintf.amd.com`) and caches them. It contacts AMD KDS only for reports whose `CHIP_ID` a deployment allows, and caches a VCEK once a report has verified against it. With revocation checking on, provision requests fail with `503 service.unavailable` while no current CRL can be obtained.
 
 ### Attestation policy
 
@@ -91,3 +93,5 @@ The policy is strict JSON with a single field, `allowed_measurements`: the Launc
 ```json
 {"allowed_measurements":["<96 lowercase hex chars>"]}
 ```
+
+The minimum firmware and microcode levels are built in: VeriProv enforces the AMD platform baseline described in [Service API](api.md#provisioning).

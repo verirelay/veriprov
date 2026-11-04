@@ -1,6 +1,6 @@
 services:
   veriprov:
-    image: ghcr.io/verirelay/veriprov:v0.2.0
+    image: ghcr.io/verirelay/veriprov:v0.3.0
     user: "${VERIPROV_UID:-65532}:${VERIPROV_GID:-65532}"
     environment:
       VERIPROV_IDENTITY_KEY_FILE: /run/veriprov/identity-key.pem

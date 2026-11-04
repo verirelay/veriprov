@@ -4,7 +4,7 @@ go 1.26.10
 
 require (
 	github.com/google/go-sev-guest v0.15.0
-	github.com/verirelay/protocol v0.1.0
+	github.com/verirelay/protocol v0.2.0
 )
 
 require (

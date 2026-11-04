@@ -40,17 +40,30 @@ VeriProv 不保存 challenge 状态，所以使用相同 `VERIPROV_CHALLENGE_KEY
 
 证明报告满足以下全部条件时，VeriProv 才接受它：
 
-- 由 VCEK 签名，能用从 AMD KDS 获取的 AMD 证书验证，开启吊销检查时还要通过当前有效的 AMD CRL
 - `REPORT_DATA` 与 challenge 绑定一致
+- `CHIP_ID` 在某个部署的 `allowed_chip_ids` 中。VeriProv 在访问 AMD KDS 之前检查这一项
+- 由 VCEK 签名，能用从 AMD KDS 获取的 AMD 证书验证，开启吊销检查时还要通过当前有效的 AMD CRL
 - guest policy 禁止调试和迁移代理（允许 SMT）
 - VMPL 为 0
 - TCB 字段彼此一致，且与 VCEK 一致
+- 满足 [`avr/1` 收据](https://github.com/verirelay/protocol/blob/main/docs/avr1.zh-CN.md)「平台基线」一节中的 AMD 平台基线：CPU 型号有最低版本，`REPORTED_TCB` 和 `LAUNCH_TCB` 不低于它，`PLATFORM_INFO` 设置了 `ALIAS_CHECK_COMPLETE`
 - 启动度量在远程证明 policy 中
 - `HOST_DATA` 属于某个部署，即它是某个已配置引导文件的 SHA-256
+- `CHIP_ID` 在该部署的 `allowed_chip_ids` 中
 
 `ProvisionResponse` 的 envelope 携带该部署的运行配置，加密给 `provisioning_public_key`，并用 VeriProv 身份密钥签名。
 
 部署和远程证明 policy 见 [配置](configuration.zh-CN.md)。
+
+VeriProv 以 `warn` 级别记录每个被拒绝的证明报告及其 `request_id`：
+
+| 消息 | 字段 |
+| --- | --- |
+| `attestation verification failed` | `error` 指出未通过的检查。平台基线检查失败时，它给出 CPU 型号、该型号的最低 `TCB_VERSION` 和对应的 AMD 安全公告 |
+| `provision rejected: unknown HOST_DATA` | 验证过的 `host_data` 和 `chip_id` |
+| `provision rejected: CHIP_ID not in the deployment's allowed_chip_ids` | 验证过的 `host_data` 和 `chip_id` |
+
+`CHIP_ID` 不被任何部署允许的证明报告在验证之前就被拒绝，其未经验证的 `CHIP_ID` 不会写入日志。
 
 ## 引导文件
 

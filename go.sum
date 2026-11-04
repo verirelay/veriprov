@@ -14,8 +14,8 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/stretchr/testify v1.7.0 h1:nwc3DEeHmmLAfoZucVR881uASk0Mfjw8xYJ99tb5CcY=
 github.com/stretchr/testify v1.7.0/go.mod h1:6Fq8oRcR53rry900zMqJjRRixrwX3KX962/h/Wwjteg=
-github.com/verirelay/protocol v0.1.0 h1:LXvu1IpDiKPcCKo48seGXQZrxAq++i4hUZHWfbrDXFM=
-github.com/verirelay/protocol v0.1.0/go.mod h1:Jh8Bp4ZifTFcYqH+rlzL4FT37DBYnoD6k+nTaZ4ncDI=
+github.com/verirelay/protocol v0.2.0 h1:v1PtMH56dwQE4/KZk0iquBxn9nuOs2WbSj5t+4bQ2Wk=
+github.com/verirelay/protocol v0.2.0/go.mod h1:Jh8Bp4ZifTFcYqH+rlzL4FT37DBYnoD6k+nTaZ4ncDI=
 go.uber.org/multierr v1.11.0 h1:blXXJkSxSSfBVBlC76pxqeO+LN3aDfLQo+309xJstO0=
 go.uber.org/multierr v1.11.0/go.mod h1:20+QtiLqy0Nd6FdQB9TLXag12DsQkrbs3htMFfDN80Y=
 golang.org/x/crypto v0.58.0 h1:COkYLr4k7nDI4r6QtMML2AfzeIswWHAJthLS6K/M/54=

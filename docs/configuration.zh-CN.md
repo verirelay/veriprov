@@ -38,18 +38,19 @@ VeriProv 通过 `VERIPROV_*` 环境变量配置，必填变量缺失或任何值
 
 部署文件是非空 JSON 列表。它按严格规则解码：未知字段和重复键都会被拒绝。
 
-每一项把一个引导文件与下发给用它启动的 CVM 的运行配置配成一对：
+每一项把一个引导文件与下发给用它启动的 CVM 的运行配置配成一对，并列出这些 CVM 可以运行的宿主机：
 
 ```json
-[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json"}]
+[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json","allowed_chip_ids":["<128 个小写十六进制字符>"]}]
 ```
 
 | 字段 | 规则 |
 | --- | --- |
 | `bootstrap_file` | 必填，引导文件路径 |
 | `runtime_config_file` | 必填，运行配置文件路径 |
+| `allowed_chip_ids` | 必填，其上 CVM 可以收到这份运行配置的宿主机的 `CHIP_ID`：非空且不重复的 64 字节值列表，小写十六进制。宿主机 `CHIP_ID` 的查看方法见 [部署](deployment.zh-CN.md#宿主机) |
 
-两个字段中的相对路径都相对于部署文件所在目录。
+两个文件字段中的相对路径都相对于部署文件所在目录。
 
 启动时 VeriProv 检查每一项：
 
@@ -57,10 +58,11 @@ VeriProv 通过 `VERIPROV_*` 环境变量配置，必填变量缺失或任何值
 - 引导文件的 `identity_public_key` 是 `VERIPROV_IDENTITY_KEY_FILE` 的公钥
 - 任意两项的引导文件字节都不相同
 - 运行配置是合法的 `verirelay-runtime-config/1` object，格式见 [Protocol 线协议](https://github.com/verirelay/protocol/blob/main/docs/veriprov1.zh-CN.md)的「运行配置」一节（schema：[`schemas/veriprov1/verirelay_runtime_config.schema.json`](https://github.com/verirelay/protocol/blob/main/schemas/veriprov1/verirelay_runtime_config.schema.json)）
+- `allowed_chip_ids` 至少列出一个 `CHIP_ID`，每个都是 128 个小写十六进制字符，且不重复
 
 运行配置各字段的作用见 VeriRelay 的 [configuration.zh-CN.md](https://github.com/verirelay/verirelay/blob/main/docs/configuration.zh-CN.md) 中「VeriProv 下发的运行配置」一节。
 
-一个部署的 `HOST_DATA` 是其引导文件原始字节的 SHA-256。证明报告携带该 `HOST_DATA` 的配置下发请求，收到的是该部署运行配置文件的原始字节。
+一个部署的 `HOST_DATA` 是其引导文件原始字节的 SHA-256。如果配置下发请求的证明报告携带该 `HOST_DATA`，且其 `CHIP_ID` 在该部署的 `allowed_chip_ids` 中，请求收到的就是该部署运行配置文件的原始字节。
 
 运行配置整体是 secret，包括 `admin_token` 和 store 密码。
 
@@ -82,7 +84,7 @@ VeriProv 通过 `VERIPROV_*` 环境变量配置，必填变量缺失或任何值
 
 两个 policy 变量必须且只能设置一个。
 
-VeriProv 从 AMD KDS（`kdsintf.amd.com`）获取 AMD 证书和 CRL 并缓存。开启吊销检查时，只要拿不到当前有效的 CRL，配置下发请求就返回 `503 service.unavailable`。
+VeriProv 从 AMD KDS（`kdsintf.amd.com`）获取 AMD 证书和 CRL 并缓存。它只为 `CHIP_ID` 被某个部署允许的证明报告访问 AMD KDS，并且只在有证明报告用某个 VCEK 验证通过后才缓存该 VCEK。开启吊销检查时，只要拿不到当前有效的 CRL，配置下发请求就返回 `503 service.unavailable`。
 
 ### 远程证明 policy
 
@@ -91,3 +93,5 @@ policy 是只有一个字段 `allowed_measurements` 的严格 JSON：VeriProv �
 ```json
 {"allowed_measurements":["<96 个小写十六进制字符>"]}
 ```
+
+固件和微码的最低版本是内置的：VeriProv 执行 [服务 API](api.zh-CN.md#配置下发) 中所述的 AMD 平台基线。

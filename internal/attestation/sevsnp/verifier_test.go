@@ -30,6 +30,19 @@ const (
 	policySMT      = 1 << 16
 	policyMigrate  = 1 << 18
 	policyDebug    = 1 << 19
+
+	platformSMT        = 1 << 0
+	platformTSME       = 1 << 1
+	platformECC        = 1 << 2
+	platformAliasCheck = 1 << 5
+	platformTIO        = 1 << 7
+)
+
+var (
+	testChipID  = [abi.ChipIDSize]byte(bytes.Repeat([]byte{0xa1}, abi.ChipIDSize))
+	otherChipID = [abi.ChipIDSize]byte(bytes.Repeat([]byte{0xb2}, abi.ChipIDSize))
+	// testTCB is above the Milan platform baseline (SNP 0x1b, microcode 0xde).
+	testTCB = kds.TCBParts{BlSpl: 4, SnpSpl: 0x1d, UcodeSpl: 0xde}
 )
 
 type signedVCEKFixture struct {
@@ -39,18 +52,23 @@ type signedVCEKFixture struct {
 	getter       *KDSGetter
 	trustedRoots map[string][]*trust.AMDRootCerts
 	requestCount *atomic.Int32
+	vcekRequests *atomic.Int32
 }
 
 type fixtureOptions struct {
+	// tcb is the TCB of the signing chip; nil means testTCB.
+	tcb *kds.TCBParts
 	// mutate edits the report before it is signed.
 	mutate func(*sevsnppb.Report)
 	// crl returns the CRL body KDS serves; nil serves none.
 	crl func(*guesttesting.AmdSigner) []byte
+	// anyVCEK makes KDS serve the signer's VCEK at every VCEK URL.
+	anyVCEK bool
 }
 
 func (fixture signedVCEKFixture) verifier(t *testing.T, checkRevocations bool) *Verifier {
 	t.Helper()
-	verifier, err := NewVerifier(VerifierOptions{Policy: fixture.policy, Getter: fixture.getter, CheckRevocations: checkRevocations, TrustedRoots: fixture.trustedRoots})
+	verifier, err := NewVerifier(VerifierOptions{Policy: fixture.policy, AllowedChipIDs: [][abi.ChipIDSize]byte{testChipID}, Getter: fixture.getter, CheckRevocations: checkRevocations, TrustedRoots: fixture.trustedRoots})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,12 +93,12 @@ func TestVerifierAcceptsSignedVCEKFromServerKDS(t *testing.T) {
 		mutate: func(report *sevsnppb.Report) { report.Policy |= policySMT },
 		crl:    currentCRL,
 	})
-	hostData, err := fixture.verifier(t, true).Verify(context.Background(), fixture.report, expected)
+	verified, err := fixture.verifier(t, true).Verify(context.Background(), fixture.report, expected)
 	if err != nil {
 		t.Fatalf("Verify() = %v", err)
 	}
-	if hostData != fixture.hostData {
-		t.Fatalf("HOST_DATA = %x, want %x", hostData, fixture.hostData)
+	if verified.HostData != fixture.hostData || verified.ChipID != testChipID {
+		t.Fatalf("Verify() = %+v, want HOST_DATA %x and CHIP_ID %x", verified, fixture.hostData, testChipID)
 	}
 	if fixture.requestCount.Load() == 0 {
 		t.Fatal("verifier did not fetch server-controlled KDS endorsements")
@@ -94,32 +112,60 @@ func TestVerifierRejectsReportDataMismatch(t *testing.T) {
 	}
 }
 
-func TestVerifierRejectsTamperedSignature(t *testing.T) {
+func TestVerifierRejectsInvalidEvidence(t *testing.T) {
 	expected := [64]byte{2}
 	fixture := newSignedVCEKFixture(t, expected, fixtureOptions{})
-	report := bytes.Clone(fixture.report)
-	report[0x2A0] ^= 0xff
-	if _, err := fixture.verifier(t, false).Verify(context.Background(), report, expected); !errors.Is(err, attestation.ErrInvalidEvidence) {
-		t.Fatalf("Verify() error = %v, want ErrInvalidEvidence", err)
+	edited := func(offset int) []byte {
+		report := bytes.Clone(fixture.report)
+		report[offset] ^= 0xff
+		return report
+	}
+	cases := []struct {
+		name     string
+		report   []byte
+		verifier func(*testing.T) *Verifier
+	}{
+		{"signature", edited(0x2A0), nil},
+		{"measurement edited after signing", edited(0x90), nil},
+		{"HOST_DATA edited after signing", edited(0xC0), nil},
+		{"test chain under AMD roots", fixture.report, func(t *testing.T) *Verifier {
+			fixture := fixture
+			fixture.trustedRoots = nil
+			return fixture.verifier(t, false)
+		}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			verifier := fixture.verifier(t, false)
+			if test.verifier != nil {
+				verifier = test.verifier(t)
+			}
+			if _, err := verifier.Verify(context.Background(), test.report, expected); !errors.Is(err, attestation.ErrInvalidEvidence) {
+				t.Fatalf("Verify() error = %v, want ErrInvalidEvidence", err)
+			}
+		})
 	}
 }
 
 func TestVerifierPolicyDenials(t *testing.T) {
 	cases := []struct {
-		name   string
-		mutate func(*sevsnppb.Report)
-		policy func(*Policy)
+		name    string
+		mutate  func(*sevsnppb.Report)
+		policy  func(*Policy)
+		anyVCEK bool
 	}{
 		{name: "debug", mutate: func(report *sevsnppb.Report) { report.Policy |= policyDebug }},
 		{name: "migration agent", mutate: func(report *sevsnppb.Report) { report.Policy |= policyMigrate }},
 		{name: "VMPL 1", mutate: func(report *sevsnppb.Report) { report.Vmpl = 1 }},
+		{name: "VMPL 3", mutate: func(report *sevsnppb.Report) { report.Vmpl = 3 }},
 		{name: "committed TCB differs", mutate: func(report *sevsnppb.Report) { report.CommittedTcb++ }},
+		{name: "REPORTED_TCB differs from the VCEK", anyVCEK: true, mutate: func(report *sevsnppb.Report) { report.ReportedTcb++ }},
 		{name: "measurement", policy: func(policy *Policy) { policy.AllowedMeasurements = []string{strings.Repeat("0", 96)} }},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			expected := [64]byte{6}
-			fixture := newSignedVCEKFixture(t, expected, fixtureOptions{mutate: test.mutate})
+			fixture := newSignedVCEKFixture(t, expected, fixtureOptions{mutate: test.mutate, anyVCEK: test.anyVCEK})
 			if test.policy != nil {
 				test.policy(&fixture.policy)
 			}
@@ -127,6 +173,101 @@ func TestVerifierPolicyDenials(t *testing.T) {
 				t.Fatalf("Verify() error = %v, want ErrPolicyDenied", err)
 			}
 		})
+	}
+}
+
+func TestVerifierRefusesChipIDOfAnotherVCEK(t *testing.T) {
+	expected := [64]byte{6}
+	fixture := newSignedVCEKFixture(t, expected, fixtureOptions{anyVCEK: true, mutate: func(report *sevsnppb.Report) { report.ChipId = otherChipID[:] }})
+	verifier, err := NewVerifier(VerifierOptions{Policy: fixture.policy, AllowedChipIDs: [][abi.ChipIDSize]byte{otherChipID}, Getter: fixture.getter, TrustedRoots: fixture.trustedRoots})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = verifier.Verify(context.Background(), fixture.report, expected)
+	if !errors.Is(err, attestation.ErrPolicyDenied) || !strings.Contains(err.Error(), "HWID") {
+		t.Fatalf("Verify() error = %v, want ErrPolicyDenied naming the VCEK HWID", err)
+	}
+}
+
+func TestNewVerifierRequiresAllowedChipIDs(t *testing.T) {
+	fixture := newSignedVCEKFixture(t, [64]byte{6}, fixtureOptions{})
+	if _, err := NewVerifier(VerifierOptions{Policy: fixture.policy, Getter: fixture.getter}); err == nil {
+		t.Fatal("NewVerifier() accepted no allowed CHIP_IDs")
+	}
+}
+
+func TestVerifierRefusesUnlistedChipBeforeKDS(t *testing.T) {
+	expected := [64]byte{6}
+	fixture := newSignedVCEKFixture(t, expected, fixtureOptions{})
+	verifier, err := NewVerifier(VerifierOptions{Policy: fixture.policy, AllowedChipIDs: [][abi.ChipIDSize]byte{otherChipID}, Getter: fixture.getter, TrustedRoots: fixture.trustedRoots})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifier.Verify(context.Background(), fixture.report, expected); !errors.Is(err, attestation.ErrPolicyDenied) {
+		t.Fatalf("Verify() error = %v, want ErrPolicyDenied", err)
+	}
+	if fixture.requestCount.Load() != 0 {
+		t.Fatalf("KDS requests = %d, want 0", fixture.requestCount.Load())
+	}
+}
+
+func TestVerifierPlatformBaseline(t *testing.T) {
+	tcb := func(parts kds.TCBParts) *kds.TCBParts { return &parts }
+	cases := []struct {
+		name    string
+		tcb     *kds.TCBParts
+		mutate  func(*sevsnppb.Report)
+		allowed bool
+	}{
+		{name: "at the minimum", tcb: tcb(kds.TCBParts{SnpSpl: 0x1b, UcodeSpl: 0xde}), allowed: true},
+		{name: "SMT, TSME and SEV-TIO", mutate: func(report *sevsnppb.Report) { report.PlatformInfo |= platformTSME | platformTIO }, allowed: true},
+		{name: "TCB 0", tcb: tcb(kds.TCBParts{})},
+		{name: "microcode below the minimum", tcb: tcb(kds.TCBParts{BlSpl: 4, SnpSpl: 0x1d, UcodeSpl: 0xdd})},
+		{name: "SNP firmware below the minimum", tcb: tcb(kds.TCBParts{BlSpl: 4, SnpSpl: 0x1a, UcodeSpl: 0xde})},
+		{name: "LAUNCH_TCB below the minimum", mutate: func(report *sevsnppb.Report) { report.LaunchTcb &^= 0xff << 56 }},
+		{name: "alias check incomplete", mutate: func(report *sevsnppb.Report) { report.PlatformInfo &^= platformAliasCheck }},
+		{name: "CPU model without a baseline", mutate: func(report *sevsnppb.Report) { report.Cpuid1EaxFms = 0x00a00f10 }},
+		{name: "report version 2", mutate: func(report *sevsnppb.Report) { report.Version, report.Cpuid1EaxFms = 2, 0 }},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			expected := [64]byte{8}
+			fixture := newSignedVCEKFixture(t, expected, fixtureOptions{tcb: test.tcb, mutate: test.mutate})
+			_, err := fixture.verifier(t, false).Verify(context.Background(), fixture.report, expected)
+			if test.allowed {
+				if err != nil {
+					t.Fatalf("Verify() = %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, attestation.ErrPolicyDenied) || !strings.Contains(err.Error(), "platform baseline") {
+				t.Fatalf("Verify() error = %v, want a platform baseline denial", err)
+			}
+		})
+	}
+}
+
+func TestVerifierCachesVCEKOnlyOnceAReportVerified(t *testing.T) {
+	expected := [64]byte{9}
+	fixture := newSignedVCEKFixture(t, expected, fixtureOptions{})
+	verifier := fixture.verifier(t, false)
+	forged := bytes.Clone(fixture.report)
+	forged[0x2A0] ^= 0xff
+	for range 2 {
+		if _, err := verifier.Verify(context.Background(), forged, expected); !errors.Is(err, attestation.ErrInvalidEvidence) {
+			t.Fatalf("Verify(forged) error = %v, want ErrInvalidEvidence", err)
+		}
+	}
+	if got := fixture.vcekRequests.Load(); got != 2 {
+		t.Fatalf("VCEK requests after two forged reports = %d, want 2", got)
+	}
+	for range 2 {
+		if _, err := verifier.Verify(context.Background(), fixture.report, expected); err != nil {
+			t.Fatalf("Verify() = %v", err)
+		}
+	}
+	if got := fixture.vcekRequests.Load(); got != 3 {
+		t.Fatalf("VCEK requests after two verified reports = %d, want 3", got)
 	}
 }
 
@@ -212,16 +353,45 @@ func TestClassifyVerificationErrorWrapsCause(t *testing.T) {
 	}
 }
 
+// newSigner returns a test AMD certificate chain for a Milan-B1 chip with
+// CHIP_ID testChipID at tcb.
+func newSigner(t *testing.T, tcb kds.TCBParts) *guesttesting.AmdSigner {
+	t.Helper()
+	version, err := kds.ComposeTCBParts(tcb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	builder := &guesttesting.AmdSignerBuilder{
+		Keys:             guesttesting.DefaultAmdKeys(),
+		ProductName:      "Milan-B1",
+		CSPID:            "go-sev-guest",
+		ArkCreationTime:  now,
+		AskCreationTime:  now,
+		AsvkCreationTime: now,
+		VcekCreationTime: now,
+		VlekCreationTime: now,
+		HWID:             testChipID,
+		TCB:              version,
+		VcekCustom:       guesttesting.CertOverride{Extensions: guesttesting.CustomExtensions(tcb, testChipID[:], "go-sev-guest", "Milan-B1")},
+	}
+	signer, err := builder.TestOnlyCertChain()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signer.Product, err = kds.ParseProductName("Milan-B1", abi.VcekReportSigner); err != nil {
+		t.Fatal(err)
+	}
+	return signer
+}
+
 func newSignedVCEKFixture(t *testing.T, expected [64]byte, options fixtureOptions) signedVCEKFixture {
 	t.Helper()
-	signer, err := guesttesting.DefaultTestOnlyCertChain("Milan-B0", time.Now().UTC())
-	if err != nil {
-		t.Fatal(err)
+	tcb := testTCB
+	if options.tcb != nil {
+		tcb = *options.tcb
 	}
-	signer.Product, err = kds.ParseProductName("Milan-B0", abi.VcekReportSigner)
-	if err != nil {
-		t.Fatal(err)
-	}
+	signer := newSigner(t, tcb)
 	fms := abi.MaskedCpuid1EaxFromSevProduct(signer.Product)
 	raw := guesttesting.CreateRawReport(&guesttesting.TestReportOptions{ReportData: expected[:], SignerInfo: abi.SignerInfo{SigningKey: abi.VcekReportSigner}, FMS: fms, Version: 3})
 	report, err := abi.ReportToProto(raw[:])
@@ -234,6 +404,7 @@ func newSignedVCEKFixture(t *testing.T, expected [64]byte, options fixtureOption
 	report.Measurement = bytes.Repeat([]byte{7}, abi.MeasurementSize)
 	report.HostData = bytes.Repeat([]byte{9}, abi.HostDataSize)
 	report.ChipId = append([]byte(nil), signer.HWID[:]...)
+	report.PlatformInfo = platformSMT | platformECC | platformAliasCheck
 	report.CurrentTcb = uint64(signer.TCB)
 	report.ReportedTcb = uint64(signer.TCB)
 	report.CommittedTcb = uint64(signer.TCB)
@@ -263,6 +434,7 @@ func newSignedVCEKFixture(t *testing.T, expected [64]byte, options fixtureOption
 	}
 	crlPath := strings.TrimPrefix(kds.CrlLinkByKey("Milan", abi.VcekReportSigner), "https://kdsintf.amd.com")
 	requestCount := &atomic.Int32{}
+	vcekRequests := &atomic.Int32{}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		requestCount.Add(1)
 		if request.URL.Path == crlPath {
@@ -273,7 +445,15 @@ func newSignedVCEKFixture(t *testing.T, expected [64]byte, options fixtureOption
 			_, _ = writer.Write(crl)
 			return
 		}
-		body, getErr := fakeKDS.Get("https://kdsintf.amd.com" + request.URL.RequestURI())
+		requestURL := "https://kdsintf.amd.com" + request.URL.RequestURI()
+		if isVCEKURL(requestURL) {
+			vcekRequests.Add(1)
+			if options.anyVCEK {
+				_, _ = writer.Write(signer.Vcek.Raw)
+				return
+			}
+		}
+		body, getErr := fakeKDS.Get(requestURL)
 		if getErr != nil {
 			http.Error(writer, getErr.Error(), http.StatusNotFound)
 			return
@@ -295,5 +475,6 @@ func newSignedVCEKFixture(t *testing.T, expected [64]byte, options fixtureOption
 		getter:       getter,
 		trustedRoots: trustedRoots,
 		requestCount: requestCount,
+		vcekRequests: vcekRequests,
 	}
 }

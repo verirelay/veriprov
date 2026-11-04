@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,7 +24,8 @@ type Options struct {
 	Verifier    attestation.Verifier
 	IdentityKey ed25519.PrivateKey
 	// Deployments pair each Bootstrap with the Runtime Config sealed to a
-	// Guest whose Attestation Report carries its HOST_DATA.
+	// Guest whose Attestation Report carries its HOST_DATA and one of its
+	// allowed CHIP_IDs.
 	Deployments    []config.Deployment
 	MaxBodyBytes   int64
 	MaxConcurrency int
@@ -31,10 +33,10 @@ type Options struct {
 }
 
 type Handler struct {
-	options        Options
-	limit          chan struct{}
-	runtimeConfigs map[[32]byte][]byte
-	bootstraps     BootstrapsResponse
+	options     Options
+	limit       chan struct{}
+	deployments map[[32]byte]config.Deployment
+	bootstraps  BootstrapsResponse
 }
 
 // BootstrapsResponse is the body of GET /v1/bootstraps: the Bootstrap of every
@@ -67,9 +69,9 @@ func NewHandler(options Options) (*Handler, error) {
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
-	handler := &Handler{options: options, limit: make(chan struct{}, options.MaxConcurrency), runtimeConfigs: map[[32]byte][]byte{}}
+	handler := &Handler{options: options, limit: make(chan struct{}, options.MaxConcurrency), deployments: map[[32]byte]config.Deployment{}}
 	for _, d := range options.Deployments {
-		handler.runtimeConfigs[d.HostData] = d.RuntimeConfig
+		handler.deployments[d.HostData] = d
 		handler.bootstraps.Bootstraps = append(handler.bootstraps.Bootstraps, Bootstrap{
 			Profile:   d.Profile,
 			HostData:  hex.EncodeToString(d.HostData[:]),
@@ -190,19 +192,25 @@ func (handler *Handler) provision(writer http.ResponseWriter, request *http.Requ
 		return
 	}
 	report, _ := veriprov1.DecodeBase64URL(payload.AttestationReport, "attestation_report", veriprov1.AttestationReportSize)
-	hostData, err := handler.options.Verifier.Verify(request.Context(), report, expected)
+	verified, err := handler.options.Verifier.Verify(request.Context(), report, expected)
 	if err != nil {
 		handler.attestationError(writer, err, id)
 		return
 	}
-	runtimeConfig, ok := handler.runtimeConfigs[hostData]
+	hostData, chipID := hex.EncodeToString(verified.HostData[:]), hex.EncodeToString(verified.ChipID[:])
+	d, ok := handler.deployments[verified.HostData]
 	if !ok {
-		handler.options.Logger.Warn("provision rejected: unknown HOST_DATA", "request_id", id, "host_data", hex.EncodeToString(hostData[:]))
+		handler.options.Logger.Warn("provision rejected: unknown HOST_DATA", "request_id", id, "host_data", hostData, "chip_id", chipID)
 		handler.writeError(writer, veriprov1.ErrPolicyDenied, "HOST_DATA matches no deployment", id)
 		return
 	}
-	handler.options.Logger.Info("attestation verification succeeded", "request_id", id, "host_data", hex.EncodeToString(hostData[:]), "duration_ms", time.Since(startedAt).Milliseconds())
-	response, err := handler.seal(publicKey, runtimeConfig, payload.ChallengeID)
+	if !slices.Contains(d.AllowedChipIDs, verified.ChipID) {
+		handler.options.Logger.Warn("provision rejected: CHIP_ID not in the deployment's allowed_chip_ids", "request_id", id, "host_data", hostData, "chip_id", chipID)
+		handler.writeError(writer, veriprov1.ErrPolicyDenied, "CHIP_ID is not allowed for this deployment", id)
+		return
+	}
+	handler.options.Logger.Info("attestation verification succeeded", "request_id", id, "host_data", hostData, "chip_id", chipID, "duration_ms", time.Since(startedAt).Milliseconds())
+	response, err := handler.seal(publicKey, d.RuntimeConfig, payload.ChallengeID)
 	if err != nil {
 		handler.options.Logger.Error("seal runtime config failed", "request_id", id, "error", err)
 		handler.writeError(writer, veriprov1.ErrHPKEFailure, "could not seal runtime config", id)

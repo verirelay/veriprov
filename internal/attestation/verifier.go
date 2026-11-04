@@ -13,8 +13,15 @@ var (
 	ErrDependencyUnavailable = errors.New("attestation dependency unavailable")
 )
 
+// Report holds the fields of a verified Attestation Report that pick and
+// authorize a deployment.
+type Report struct {
+	HostData [32]byte
+	ChipID   [64]byte
+}
+
 // Verifier verifies a raw Attestation Report whose REPORT_DATA must equal
-// reportData, and returns the report's HOST_DATA.
+// reportData.
 type Verifier interface {
-	Verify(ctx context.Context, report []byte, reportData [64]byte) (hostData [32]byte, err error)
+	Verify(ctx context.Context, report []byte, reportData [64]byte) (Report, error)
 }

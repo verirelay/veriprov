@@ -7,9 +7,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,6 +22,14 @@ const (
 	testPolicy        = `{"allowed_measurements":["000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"]}`
 	testRuntimeConfig = `{"version":"verirelay-runtime-config/1","admin_token":"test-only-admin-token","future_field":true}`
 )
+
+var testChipID = strings.Repeat("a1", 64)
+
+// deploymentEntry returns a deployments file entry for bootstrap and
+// runtime-config.json that allows testChipID.
+func deploymentEntry(bootstrap string) string {
+	return `{"bootstrap_file":"` + bootstrap + `","runtime_config_file":"runtime-config.json","allowed_chip_ids":["` + testChipID + `"]}`
+}
 
 type testEnv struct {
 	dir      string
@@ -52,7 +62,7 @@ func setupEnv(t *testing.T) testEnv {
 	t.Setenv("VERIPROV_CHALLENGE_KEY_FILE", env.write(t, "challenge-key", bytes.Repeat([]byte{1}, 32)))
 	env.write(t, "bootstrap.json", env.bootstrap(identity.Public().(ed25519.PublicKey), "a"))
 	env.write(t, "runtime-config.json", []byte(testRuntimeConfig))
-	t.Setenv("VERIPROV_DEPLOYMENTS_FILE", env.write(t, "deployments.json", []byte(`[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json"}]`)))
+	t.Setenv("VERIPROV_DEPLOYMENTS_FILE", env.write(t, "deployments.json", []byte("["+deploymentEntry("bootstrap.json")+"]")))
 	t.Setenv("VERIPROV_ATTESTATION_POLICY", testPolicy)
 	return env
 }
@@ -69,7 +79,8 @@ func identityPEM(t *testing.T, key any) []byte {
 func TestLoadDeployments(t *testing.T) {
 	env := setupEnv(t)
 	other := env.write(t, "other-bootstrap.json", env.bootstrap(env.identity.Public().(ed25519.PublicKey), "b"))
-	env.write(t, "deployments.json", []byte(`[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json"},{"bootstrap_file":"`+other+`","runtime_config_file":"runtime-config.json"}]`))
+	otherChipID := strings.Repeat("b2", 64)
+	env.write(t, "deployments.json", []byte(`[`+deploymentEntry("bootstrap.json")+`,{"bootstrap_file":"`+other+`","runtime_config_file":"runtime-config.json","allowed_chip_ids":["`+otherChipID+`","`+testChipID+`"]}]`))
 	config, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -95,6 +106,19 @@ func TestLoadDeployments(t *testing.T) {
 	}
 	if config.Deployments[1].Profile != "b" {
 		t.Fatalf("profile = %q, want b", config.Deployments[1].Profile)
+	}
+	chipID := func(value string) [64]byte {
+		decoded, err := hex.DecodeString(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return [64]byte(decoded)
+	}
+	if got, want := config.Deployments[0].AllowedChipIDs, [][64]byte{chipID(testChipID)}; !slices.Equal(got, want) {
+		t.Fatalf("deployment 0 allowed_chip_ids = %x, want %x", got, want)
+	}
+	if got, want := config.Deployments[1].AllowedChipIDs, [][64]byte{chipID(otherChipID), chipID(testChipID)}; !slices.Equal(got, want) {
+		t.Fatalf("deployment 1 allowed_chip_ids = %x, want %x", got, want)
 	}
 	if !config.Attestation.SEVSNP.CheckRevocations || config.Attestation.SEVSNP.KDSCacheMaxEntries <= 0 || config.Attestation.SEVSNP.KDSCacheMaxBytes <= 0 {
 		t.Fatalf("SEV-SNP defaults = %+v", config.Attestation.SEVSNP)
@@ -154,18 +178,26 @@ func TestLoadRejectsInvalidDeployments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	chipIDs := func(list string) map[string]string {
+		return map[string]string{"deployments.json": `[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json","allowed_chip_ids":` + list + `}]`}
+	}
 	cases := []struct {
 		name  string
 		files map[string]string
 		want  string
 	}{
 		{"empty list", map[string]string{"deployments.json": `[]`}, "at least one deployment"},
-		{"not a list", map[string]string{"deployments.json": `{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json"}`}, "decode VERIPROV_DEPLOYMENTS_FILE"},
-		{"unknown field", map[string]string{"deployments.json": `[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json","profile":"a"}]`}, "unknown field"},
-		{"duplicate key", map[string]string{"deployments.json": `[{"bootstrap_file":"bootstrap.json","bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json"}]`}, "duplicate JSON key"},
-		{"missing runtime config field", map[string]string{"deployments.json": `[{"bootstrap_file":"bootstrap.json"}]`}, "are required"},
-		{"missing bootstrap file", map[string]string{"deployments.json": `[{"bootstrap_file":"missing.json","runtime_config_file":"runtime-config.json"}]`}, "read bootstrap_file"},
-		{"repeated bootstrap", map[string]string{"deployments.json": `[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json"},{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json"}]`}, "deployment 1: bootstrap_file repeats"},
+		{"not a list", map[string]string{"deployments.json": deploymentEntry("bootstrap.json")}, "decode VERIPROV_DEPLOYMENTS_FILE"},
+		{"unknown field", map[string]string{"deployments.json": `[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json","allowed_chip_ids":["` + testChipID + `"],"profile":"a"}]`}, "unknown field"},
+		{"duplicate key", map[string]string{"deployments.json": `[{"bootstrap_file":"bootstrap.json","bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json","allowed_chip_ids":["` + testChipID + `"]}]`}, "duplicate JSON key"},
+		{"missing runtime config field", map[string]string{"deployments.json": `[{"bootstrap_file":"bootstrap.json","allowed_chip_ids":["` + testChipID + `"]}]`}, "are required"},
+		{"missing bootstrap file", map[string]string{"deployments.json": "[" + deploymentEntry("missing.json") + "]"}, "read bootstrap_file"},
+		{"repeated bootstrap", map[string]string{"deployments.json": "[" + deploymentEntry("bootstrap.json") + "," + deploymentEntry("bootstrap.json") + "]"}, "deployment 1: bootstrap_file repeats"},
+		{"missing allowed_chip_ids", map[string]string{"deployments.json": `[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json"}]`}, "allowed_chip_ids must list at least one CHIP_ID"},
+		{"empty allowed_chip_ids", chipIDs(`[]`), "allowed_chip_ids must list at least one CHIP_ID"},
+		{"uppercase CHIP_ID", chipIDs(`["` + strings.ToUpper(testChipID) + `"]`), "is not 128 lowercase hex characters"},
+		{"short CHIP_ID", chipIDs(`["` + testChipID[2:] + `"]`), "is not 128 lowercase hex characters"},
+		{"repeated CHIP_ID", chipIDs(`["` + testChipID + `","` + testChipID + `"]`), "is listed twice"},
 		{"bootstrap unknown field", map[string]string{"bootstrap.json": `{"version":"veriprov-bootstrap/1","protocol":"veriprov/1","url":"https://veriprov.example.com","identity_public_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","tls_spki_sha256":"x"}`}, "unknown JSON field"},
 		{"bootstrap invalid url", map[string]string{"bootstrap.json": `{"version":"veriprov-bootstrap/1","protocol":"veriprov/1","url":"http://veriprov.example.com","identity_public_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}`}, "HTTPS origin"},
 		{"bootstrap other identity", map[string]string{"bootstrap.json": string(testEnv{}.bootstrap(otherIdentity.Public().(ed25519.PublicKey), "a"))}, "identity_public_key is not the public key"},

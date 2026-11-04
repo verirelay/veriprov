@@ -50,20 +50,40 @@ VeriProv 配置的也是同一个文件：任何字节差异（包括空白或�
 ## 部署
 
 1. 为用该引导文件启动的 CVM 写好运行配置
-2. 在部署文件中列出这一对文件
+2. 在部署文件中列出这一对文件，以及运行这些 CVM 的[宿主机](#宿主机)的 `CHIP_ID`
 3. 允许这些 CVM 可以运行的启动度量
 
 ```bash
 printf '{"version":"verirelay-runtime-config/1","admin_token":"%s"}' "$(openssl rand -hex 32)" > runtime-config.json
-printf '[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json"}]' > deployments.json
+printf '[{"bootstrap_file":"bootstrap.json","runtime_config_file":"runtime-config.json","allowed_chip_ids":["%s"]}]' "<128 个小写十六进制字符>" > deployments.json
 printf '{"allowed_measurements":["%s"]}' "<96 个小写十六进制字符>" > attestation-policy.json
 ```
 
 每个 release 按 vCPU 数各列出一个启动度量。见 Release 的 [启动度量](https://github.com/verirelay/release/blob/main/docs/launch-measurement.zh-CN.md)。
 
+## 宿主机
+
+CVM 只有在同时满足以下两点的宿主机上才能收到运行配置：
+
+- 宿主机的 `CHIP_ID` 在部署的 `allowed_chip_ids` 中。每颗 AMD SEV-SNP CPU 都有自己的 `CHIP_ID`，它签发的证明报告中都带有这 64 字节
+- 宿主机满足 [`avr/1` 收据](https://github.com/verirelay/protocol/blob/main/docs/avr1.zh-CN.md)「平台基线」一节中的 AMD 平台基线：SNP 固件和微码不低于其 CPU 型号的最低版本，且设置了 `ALIAS_CHECK_COMPLETE`
+
+否则 CVM 会收到 `409 policy.denied`，VeriProv 会记录原因，日志内容见 [服务 API](api.zh-CN.md#配置下发)。
+
+只列出你自己运营的宿主机；把 CVM 迁到新宿主机之前，先把它加入 `allowed_chip_ids`。以下任一方式都能看到宿主机的 `CHIP_ID`：
+
+- 在宿主机上，[`snphost`](https://github.com/virtee/snphost) 以大写十六进制打印它：
+
+  ```bash
+  snphost show identifier | tr 'A-F' 'a-f'
+  ```
+
+- 宿主机上的 VeriRelay CVM 每次请求配置下发时都会在日志 `bootstrap matches HOST_DATA` 一行中以 `chip_id` 打印自己的 `CHIP_ID`，见 VeriRelay 的 [configuration.zh-CN.md](https://github.com/verirelay/verirelay/blob/main/docs/configuration.zh-CN.md) 中「生产模式启动」一节
+- 宿主机已列在另一个部署中时，VeriProv 会记录 `provision rejected: CHIP_ID not in the deployment's allowed_chip_ids`，带验证过的 `chip_id` 和它请求的 `host_data`
+
 ## docker-compose.yaml
 
-仓库根目录的 [`docker-compose.yaml`](../docker-compose.yaml) 以加固方式运行已发布的镜像 `ghcr.io/verirelay/veriprov:v0.2.0`：
+仓库根目录的 [`docker-compose.yaml`](../docker-compose.yaml) 以加固方式运行已发布的镜像 `ghcr.io/verirelay/veriprov:v0.3.0`：
 
 - 只读 rootfs
 - drop 全部 capabilities

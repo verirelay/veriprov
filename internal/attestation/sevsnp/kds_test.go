@@ -141,7 +141,25 @@ func testKDSURL() string {
 	return kds.VCEKCertURL("Milan", bytes.Repeat([]byte{1}, abi.ChipIDSize), 0)
 }
 
+func testChainURL() string {
+	return kds.ProductCertChainURL(abi.VcekReportSigner, "Milan")
+}
+
+// testKDSBody returns a VCEK body.
 func testKDSBody(t *testing.T) []byte {
+	t.Helper()
+	return fakeKDSBody(t, func(signer *guesttesting.AmdSigner) string {
+		return kds.VCEKCertURL("Milan", signer.HWID[:], signer.TCB)
+	})
+}
+
+// testChainBody returns a product certificate chain body.
+func testChainBody(t *testing.T) []byte {
+	t.Helper()
+	return fakeKDSBody(t, func(*guesttesting.AmdSigner) string { return testChainURL() })
+}
+
+func fakeKDSBody(t *testing.T, rawURL func(*guesttesting.AmdSigner) string) []byte {
 	t.Helper()
 	signer, err := guesttesting.DefaultTestOnlyCertChain("Milan-B0", time.Now().UTC())
 	if err != nil {
@@ -151,7 +169,7 @@ func testKDSBody(t *testing.T) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := fake.Get(kds.VCEKCertURL("Milan", signer.HWID[:], signer.TCB))
+	body, err := fake.Get(rawURL(signer))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +216,7 @@ func TestKDSAllowsOnlyVCEKCRLForAllowedProduct(t *testing.T) {
 }
 
 func TestKDSFetchOutlivesCanceledCaller(t *testing.T) {
-	body := testKDSBody(t)
+	body := testChainBody(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	getter, server := newKDSGetterForTest(t, func(writer http.ResponseWriter, _ *http.Request) {
@@ -209,7 +227,7 @@ func TestKDSFetchOutlivesCanceledCaller(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errorsOut := make(chan error, 1)
 	go func() {
-		_, err := getter.GetContext(ctx, testKDSURL())
+		_, err := getter.GetContext(ctx, testChainURL())
 		errorsOut <- err
 	}()
 	<-started
@@ -218,7 +236,7 @@ func TestKDSFetchOutlivesCanceledCaller(t *testing.T) {
 		t.Fatalf("GetContext() error = %v, want context.Canceled", err)
 	}
 	close(release)
-	got, err := getter.Get(testKDSURL())
+	got, err := getter.Get(testChainURL())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,14 +429,14 @@ func TestKDSRetryAfterOverridesBackoff(t *testing.T) {
 }
 
 func TestKDSMemoryCacheReturnsClones(t *testing.T) {
-	body := testKDSBody(t)
+	body := testChainBody(t)
 	getter, server := newKDSGetterForTest(t, func(writer http.ResponseWriter, _ *http.Request) { _, _ = writer.Write(body) }, KDSGetterOptions{})
-	first, err := getter.Get(testKDSURL())
+	first, err := getter.Get(testChainURL())
 	if err != nil {
 		t.Fatal(err)
 	}
 	first[0] ^= 0xff
-	second, err := getter.Get(testKDSURL())
+	second, err := getter.Get(testChainURL())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,6 +445,37 @@ func TestKDSMemoryCacheReturnsClones(t *testing.T) {
 	}
 	if server.count() != 1 {
 		t.Fatalf("requests = %d, want 1", server.count())
+	}
+}
+
+func TestKDSCachesVCEKOnlyOnceKept(t *testing.T) {
+	body := testKDSBody(t)
+	cacheDir := t.TempDir()
+	getter, server := newKDSGetterForTest(t, func(writer http.ResponseWriter, _ *http.Request) { _, _ = writer.Write(body) }, KDSGetterOptions{CacheDir: cacheDir})
+	for range 2 {
+		if _, err := getter.Get(testKDSURL()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if server.count() != 2 {
+		t.Fatalf("requests before keep = %d, want 2", server.count())
+	}
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("disk cache before keep = %v, %v; want empty", entries, err)
+	}
+	getter.keep(testKDSURL(), body)
+	restarted, err := NewKDSGetter(KDSGetterOptions{AllowedProducts: []string{"Milan"}, CacheDir: cacheDir, TestBaseURL: server.server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range []*KDSGetter{getter, restarted} {
+		if got, err := g.Get(testKDSURL()); err != nil || !bytes.Equal(got, body) {
+			t.Fatalf("Get() after keep = %v", err)
+		}
+	}
+	if server.count() != 2 {
+		t.Fatalf("requests after keep = %d, want 2", server.count())
 	}
 }
 
@@ -463,10 +512,10 @@ func TestKDSInflightRequestsAreMerged(t *testing.T) {
 }
 
 func TestKDSDiskCacheSurvivesGetterReplacement(t *testing.T) {
-	body := testKDSBody(t)
+	body := testChainBody(t)
 	cacheDir := t.TempDir()
 	getter, server := newKDSGetterForTest(t, func(writer http.ResponseWriter, _ *http.Request) { _, _ = writer.Write(body) }, KDSGetterOptions{CacheDir: cacheDir})
-	if _, err := getter.Get(testKDSURL()); err != nil {
+	if _, err := getter.Get(testChainURL()); err != nil {
 		t.Fatal(err)
 	}
 	if server.count() != 1 {
@@ -476,7 +525,7 @@ func TestKDSDiskCacheSurvivesGetterReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := second.Get(testKDSURL())
+	got, err := second.Get(testChainURL())
 	if err != nil {
 		t.Fatal(err)
 	}
